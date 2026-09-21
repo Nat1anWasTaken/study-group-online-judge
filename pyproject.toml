@@ -1,0 +1,29 @@
+[project]
+name = "study-group-online-judge"
+version = "0.1.0"
+description = "An automated judging system facilitating scoring in Cerulean's study group."
+readme = "README.md"
+authors = [
+    { name = "burnedinthesky", email = "ak@cerulean.works" }
+]
+requires-python = ">=3.14"
+dependencies = [
+    "fastapi[standard]>=0.141.1",
+    "pydantic>=2.13.5",
+]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.16.8",
+    "ty>=0.0.82",
+]
+
+[project.scripts]
+judge-server = "judge.main:app"
+
+[build-system]
+requires = ["uv_build>=0.12.16,<0.13.0"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = ["judge"]
