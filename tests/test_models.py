@@ -25,6 +25,15 @@ class SubmissionTests(unittest.TestCase):
                 github_actor="student",
             )
 
+    def test_rejects_a_non_github_repository(self) -> None:
+        with self.assertRaises(ValidationError):
+            Submission(
+                repo_url="https://example.com/owner/repository.git",
+                commit_sha="a" * 40,
+                task_id="example",
+                github_actor="student",
+            )
+
 
 class JudgeResultTests(unittest.TestCase):
     def test_supports_pass_fail_results(self) -> None:

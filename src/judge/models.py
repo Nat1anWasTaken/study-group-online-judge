@@ -1,6 +1,8 @@
+import re
+from datetime import datetime
 from enum import StrEnum
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class JobStatus(StrEnum):
@@ -28,6 +30,14 @@ class Submission(BaseModel):
     commit_sha: str = Field(pattern=r"^[0-9a-f]{40}$")
     task_id: str = Field(min_length=1)
     github_actor: str = Field(min_length=1)
+
+    @field_validator("repo_url")
+    @classmethod
+    def validate_repo_url(cls, value: str) -> str:
+        pattern = r"https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:\.git)?"
+        if re.fullmatch(pattern, value) is None:
+            raise ValueError("repo_url must be an HTTPS GitHub repository URL")
+        return value
 
 
 class TestResult(BaseModel):
@@ -60,3 +70,20 @@ class Resources(BaseModel):
     memory_gb: int = Field(default=8, ge=1)
     gpus: int = Field(default=0, ge=0)
     timeout_seconds: int = Field(default=300, ge=1)
+
+
+class Job(BaseModel):
+    """A submission and its persistent judge state."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    submission: Submission
+    status: JobStatus
+    created_at: datetime
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+    result: JudgeResult | None = None
+    error: str | None = None
+    wandb_run_id: str | None = None
+    wandb_url: str | None = None
