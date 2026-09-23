@@ -39,7 +39,7 @@ def run_job(
             entity=wandb_entity,
             id=job.id,
             resume="allow",
-            name=f"{task.id}-{job.id[:8]}",
+            name=f"{task.id}-{job.submission.github_actor}-{job.id[:8]}",
             job_type="submission",
             config={
                 "job_id": job.id,
@@ -78,6 +78,14 @@ def run_job(
 
         result_path = output_directory / "result.json"
         result = JudgeResult.model_validate_json(result_path.read_text())
+        if result.passed is not None:
+            on_output(f"[judge] verdict: {'PASS' if result.passed else 'FAIL'}\n")
+        for test in result.tests:
+            if not test.passed:
+                on_output(
+                    f"[judge] failed {test.name}: "
+                    f"{test.message or 'no reason provided'}\n"
+                )
         _publish_result(run, job, result, result_path)
         completed = complete_job(database_path, job.id, result)
         on_output(f"[judge] completed job {job.id}\n")

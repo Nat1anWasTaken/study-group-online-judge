@@ -1,12 +1,21 @@
 import tempfile
 import unittest
+from io import StringIO
 from pathlib import Path
 
-from judge.executor import DockerExecutor
+from judge.executor import DockerExecutor, _output_lines
 from judge.models import Resources
 
 
 class DockerCommandTests(unittest.TestCase):
+    def test_streams_carriage_return_progress_updates(self) -> None:
+        self.assertEqual(
+            list(
+                _output_lines(StringIO("loading\nprogress 1/2\rprogress 2/2\r\ndone"))
+            ),
+            ["loading\n", "progress 1/2\n", "progress 2/2\n", "done\n"],
+        )
+
     def setUp(self) -> None:
         self.temporary_directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary_directory.cleanup)

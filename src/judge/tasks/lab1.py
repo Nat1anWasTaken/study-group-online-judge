@@ -1,8 +1,10 @@
 import importlib.util
 import sys
+import traceback
 from pathlib import Path
 
 import torch
+from tqdm import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from judge.models import JudgeResult, Resources, TestResult
@@ -55,9 +57,12 @@ def _load_student_function(submission: Path):
 def _reference_completion(
     prompts: list[str], max_seq_length: int
 ) -> tuple[list[str], torch.Tensor]:
+    print(f"[lab1] loading reference tokenizer: {MODEL_ID}", flush=True)
     tokenizer = AutoTokenizer.from_pretrained(MODEL_ID)
+    print(f"[lab1] loading reference model: {MODEL_ID} (fp16, CPU)", flush=True)
     model = AutoModelForCausalLM.from_pretrained(MODEL_ID, dtype=torch.float16)
     model.eval()
+    print("[lab1] reference model ready", flush=True)
 
     prompt_ids = [tokenizer.encode(prompt) for prompt in prompts]
     lengths = [len(ids) for ids in prompt_ids]
@@ -73,7 +78,16 @@ def _reference_completion(
     finished = torch.tensor([length >= max_seq_length for length in lengths])
     steps: list[torch.Tensor] = []
 
-    with torch.inference_mode():
+    with (
+        torch.inference_mode(),
+        tqdm(
+            total=max(0, max_seq_length - min(lengths)),
+            desc="[lab1] reference decoding",
+            file=sys.stdout,
+            mininterval=0,
+            miniters=1,
+        ) as progress,
+    ):
         while not bool(finished.all()):
             position_ids = (attention_mask.cumsum(dim=1) - 1).clamp_min(0)
             logits = (
@@ -103,6 +117,7 @@ def _reference_completion(
             attention_mask = torch.cat(
                 (attention_mask, active[:, None].to(dtype=attention_mask.dtype)), dim=1
             )
+            progress.update()
 
     completions = [tokenizer.decode(ids, skip_special_tokens=True) for ids in generated]
     logits = (
@@ -121,6 +136,10 @@ class Lab1(Task):
 
     def evaluate(self, submission: Path) -> JudgeResult:
         torch.set_num_threads(self.resources.cpus)
+        print(
+            f"[lab1] loading tokenizer and preparing {len(TINY_SHAKESPEARE_SAMPLES)} samples",
+            flush=True,
+        )
         tokenizer = AutoTokenizer.from_pretrained(MODEL_ID)
         token_ids = [tokenizer.encode(sample) for sample in TINY_SHAKESPEARE_SAMPLES]
         if any(len(ids) < 8 for ids in token_ids):
@@ -133,9 +152,20 @@ class Lab1(Task):
         sys.path.insert(0, str(submission / "src"))
         try:
             try:
+                print(
+                    "[lab1] loading student implementation from src/labs/lab1.py",
+                    flush=True,
+                )
                 complete = _load_student_function(submission)
+                print("[lab1] running student model and batched generation", flush=True)
                 completions, logits = complete(prompts, max_seq_length=MAX_SEQ_LENGTH)
+                print("[lab1] student generation finished", flush=True)
             except Exception as error:  # noqa: BLE001 - student failures are test failures
+                print(
+                    f"[lab1] student implementation failed: {type(error).__name__}: {error}",
+                    flush=True,
+                )
+                traceback.print_exc(file=sys.stdout)
                 return JudgeResult(
                     passed=False,
                     tests=[
@@ -159,16 +189,26 @@ class Lab1(Task):
             or not isinstance(logits, torch.Tensor)
             or logits.shape != expected_logits.shape
         ):
+            actual_shape = (
+                tuple(logits.shape)
+                if isinstance(logits, torch.Tensor)
+                else type(logits).__name__
+            )
+            reason = (
+                "Expected (list[str], Tensor) with "
+                f"{len(prompts)} completions and logits shaped {tuple(expected_logits.shape)}; "
+                f"got completions={type(completions).__name__} "
+                f"(length={len(completions) if isinstance(completions, list) else 'n/a'}), "
+                f"logits={actual_shape}"
+            )
+            print(f"[lab1] return contract failed: {reason}", flush=True)
             return JudgeResult(
                 passed=False,
                 tests=[
                     TestResult(
                         name="return_contract",
                         passed=False,
-                        message=(
-                            "Expected (list[str], Tensor) with logits shaped "
-                            f"{tuple(expected_logits.shape)}"
-                        ),
+                        message=reason,
                     )
                 ],
             )
@@ -177,7 +217,15 @@ class Lab1(Task):
         expected = expected_logits.to(dtype=torch.float32)
         tests = []
         for index, (actual_text, expected_text) in enumerate(
-            zip(completions, expected_completions, strict=True), start=1
+            tqdm(
+                zip(completions, expected_completions, strict=True),
+                total=len(prompts),
+                desc="[lab1] validating samples",
+                file=sys.stdout,
+                mininterval=0,
+                miniters=1,
+            ),
+            start=1,
         ):
             logits_match = bool(
                 torch.allclose(
@@ -188,17 +236,33 @@ class Lab1(Task):
                 )
             )
             text_match = actual_text == expected_text
+            reason = None
+            if not logits_match or not text_match:
+                max_difference = (
+                    (actual[index - 1] - expected[index - 1]).abs().max().item()
+                )
+                reason = (
+                    f"logits_match={logits_match} "
+                    f"(max_abs_diff={max_difference:.6g}, atol={LOGIT_ATOL}, rtol={LOGIT_RTOL}); "
+                    f"completion_match={text_match} "
+                    f"(expected={expected_text!r}, actual={actual_text!r})"
+                )
+                print(
+                    f"[lab1] tiny_shakespeare_{index:02d} failed: {reason}", flush=True
+                )
             tests.append(
                 TestResult(
                     name=f"tiny_shakespeare_{index:02d}",
                     passed=logits_match and text_match,
-                    message=None
-                    if logits_match and text_match
-                    else f"logits_match={logits_match}, completion_match={text_match}",
+                    message=reason,
                 )
             )
 
         passed_count = sum(test.passed for test in tests)
+        print(
+            f"[lab1] validation complete: {passed_count}/{len(tests)} samples passed",
+            flush=True,
+        )
         return JudgeResult(
             passed=passed_count == len(tests),
             score=passed_count / len(tests),

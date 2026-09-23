@@ -2,10 +2,11 @@ import os
 import re
 import subprocess
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
+from typing import IO
 from uuid import uuid4
 
 from judge.models import Resources
@@ -18,6 +19,19 @@ class ExecutionResult:
 
 class ExecutionTimeout(RuntimeError):
     pass
+
+
+def _output_lines(stream: IO[str]) -> Iterator[str]:
+    buffer: list[str] = []
+    while character := stream.read(1):
+        if character in "\r\n":
+            if buffer:
+                yield "".join(buffer) + "\n"
+                buffer.clear()
+        else:
+            buffer.append(character)
+    if buffer:
+        yield "".join(buffer) + "\n"
 
 
 class DockerExecutor:
@@ -96,7 +110,7 @@ class DockerExecutor:
 
         try:
             assert process.stdout is not None
-            for line in process.stdout:
+            for line in _output_lines(process.stdout):
                 on_output(line)
             returncode = process.wait()
         except BaseException:
