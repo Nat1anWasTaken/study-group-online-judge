@@ -1,12 +1,21 @@
 import tempfile
 import unittest
+from io import StringIO
 from pathlib import Path
 
-from judge.executor import DockerExecutor
+from judge.executor import DockerExecutor, _output_lines
 from judge.models import Resources
 
 
 class DockerCommandTests(unittest.TestCase):
+    def test_streams_carriage_return_progress_updates(self) -> None:
+        self.assertEqual(
+            list(
+                _output_lines(StringIO("loading\nprogress 1/2\rprogress 2/2\r\ndone"))
+            ),
+            ["loading\n", "progress 1/2\n", "progress 2/2\n", "done\n"],
+        )
+
     def setUp(self) -> None:
         self.temporary_directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary_directory.cleanup)
@@ -33,7 +42,7 @@ class DockerCommandTests(unittest.TestCase):
     def test_applies_isolation_and_resource_limits(self) -> None:
         command = self.command(Resources(cpus=2, memory_gb=4, timeout_seconds=60))
 
-        self.assertEqual(command[command.index("--network") + 1], "none")
+        self.assertEqual(command[command.index("--network") + 1], "bridge")
         self.assertIn("--read-only", command)
         self.assertEqual(command[command.index("--cap-drop") + 1], "ALL")
         self.assertEqual(
@@ -53,6 +62,32 @@ class DockerCommandTests(unittest.TestCase):
     def test_refuses_to_run_as_root(self) -> None:
         with self.assertRaisesRegex(ValueError, "non-root"):
             DockerExecutor("judge:test", user_id=0, group_id=0)
+
+    def test_mounts_shared_caches_writable(self) -> None:
+        self.executor = DockerExecutor(
+            "judge:test",
+            user_id=1234,
+            group_id=5678,
+            hf_cache_volume="study-group-online-judge-hf-cache",
+            uv_cache_volume="study-group-online-judge-uv-cache",
+        )
+
+        command = self.command(Resources())
+
+        self.assertIn(
+            "type=volume,source=study-group-online-judge-hf-cache,"
+            "target=/home/judge/.cache/huggingface",
+            command,
+        )
+        self.assertIn(
+            "type=volume,source=study-group-online-judge-uv-cache,"
+            "target=/home/judge/.cache/uv",
+            command,
+        )
+
+    def test_rejects_invalid_cache_volume_name(self) -> None:
+        with self.assertRaisesRegex(ValueError, "cache volume"):
+            DockerExecutor("judge:test", hf_cache_volume="bad,name")
 
 
 if __name__ == "__main__":
