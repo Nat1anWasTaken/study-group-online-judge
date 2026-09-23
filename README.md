@@ -1,42 +1,46 @@
 # Study Group Online Judge
 
-A small online judge for machine-learning study groups. Students fork the starter
-repository, implement an assignment, and submit an exact commit from GitHub Actions.
-The judge checks out that commit and runs its own trusted evaluator in an isolated
-Docker container.
+A small online judge for machine-learning study groups. Participants submit a
+commit from their fork, and the judge evaluates it with its own task tests.
 
-## How it works
+## Participants
 
-```text
-GitHub Actions
-      |
-      | POST repository + commit SHA + task ID
-      v
-FastAPI -> SQLite queue -> trusted worker -> isolated evaluator container
-                                              |
-                                              +-> result.json
-                                              +-> W&B run
-```
+### Submission flow
 
-The evaluator comes from the deployed judge image, not the student's fork. A student
-can modify their copy of the evaluator, but the server never executes that copy.
+1. Fork `cerulean-works/study-group-online-judge` into your GitHub account.
+2. Implement the task in your fork and push your changes to `main`.
+3. In your fork, open **Actions** → **Submit to study group judge** → **Run
+   workflow**, select the task, and run it on `main`.
 
-The API exposes:
+Your fork needs an Actions secret named `JUDGE_API_TOKEN` and a repository
+variable named `WANDB_PROJECT_URL`. Ask the study-group organizer for the token
+and project URL if they are not already configured. The workflow submits the
+exact commit you selected and succeeds once the judge queues it; this does not
+mean the submission passed.
 
-- `GET /healthz`
-- `POST /submissions`
-- `GET /jobs/{job_id}`
+### Where to implement
 
-Submission and job routes require `Authorization: Bearer <JUDGE_API_TOKEN>`.
+Put each implementation in the `src/labs/` file specified by its task. The
+judge checks out the submitted commit, then its task loads that file directly
+as a Python module and calls the required function. For example, `lab1` loads
+`src/labs/lab1.py` and calls `gpt2_complete`; it checks the completions and
+logits against GPT-2 Small using 20 Tiny Shakespeare prompts.
 
-## Define a task
+Keep your implementation in your fork. Changing the judge's task code in your
+fork does not change the evaluation used by the deployed judge.
 
-The first assignment is `lab1`. Students implement `gpt2_complete` in
-`src/labs/lab1.py`; the judge compares a batch of 20 Tiny Shakespeare prompts
-and their generation logits with the stock checkpoint.
+### View results
 
-Each assignment is an ordinary `Task` subclass owned by the judge. It declares its
-resource limits and evaluates the checked-out submission:
+The submission workflow prints the queued job ID and a link to its W&B run in
+the run summary. The link becomes active when the worker starts the job. Open
+it for progress, logs, metrics, and the final pass/fail result.
+
+## Contributors
+
+### Defining tasks
+
+Each task is a `Task` subclass in `src/judge/tasks/`. It declares resource
+limits and evaluates the checked-out participant submission:
 
 ```python
 from pathlib import Path
@@ -50,129 +54,17 @@ class Assignment01(Task):
     resources = Resources(cpus=2, memory_gb=4, timeout_seconds=60)
 
     def evaluate(self, submission: Path) -> JudgeResult:
-        # Load only the student implementation you intend to evaluate.
+        # Import the participant implementation and evaluate it here.
         ...
 ```
 
-Register the trusted instance in `src/judge/tasks/__init__.py`:
+Register the task instance in the `TASKS` dictionary in
+`src/judge/tasks/__init__.py`. Add its ID to the `task_id` choices in
+`.github/workflows/submit.yaml` so participants can select it. Return
+`JudgeResult(passed=...)` for correctness tasks, or include `score` and
+`metrics` for benchmarks. Set `gpus` in `Resources` when a task needs a GPU.
 
-```python
-from judge.tasks.assignment_01 import Assignment01
-
-
-TASKS = {
-    Assignment01.id: Assignment01(),
-}
-```
-
-Return `JudgeResult(passed=...)` for correctness tasks or include `score` and
-`metrics` for benchmarks. GPU tasks set `gpus` in `Resources`; the executor then
-adds Docker's `--gpus` option.
-
-## Deploy
-
-Requirements:
-
-- Docker with Compose
-- Access to `ghcr.io/cerulean-works/study-group-online-judge:main`
-- A host directory writable by UID/GID `10001` for temporary checkouts
-- A W&B project and API key
-- NVIDIA Container Toolkit when any task requests a GPU
-
-Copy `.env.example` to `.env` and set every required value. `JUDGE_WORK_ROOT` must
-be an absolute host path. The worker mounts it at the same path because evaluator
-containers are siblings created by the host Docker daemon.
-
-Create the work directory and make it available to the judge user:
-
-```console
-sudo mkdir -p /var/lib/study-group-online-judge/work
-sudo chown 10001:10001 /var/lib/study-group-online-judge/work
-```
-
-`DOCKER_GID` must match the group of the Docker socket as it appears inside a
-container. On a typical Linux Docker host, this returns the value:
-
-```console
-stat -c '%g' /var/run/docker.sock
-```
-
-Docker Desktop and OrbStack commonly expose the mounted socket with group `0`.
-The worker remains UID `10001`; the configured group is supplemental.
-
-Generate a submission token and start both services:
-
-```console
-openssl rand -hex 32
-docker compose up -d
-docker compose ps
-```
-
-Compose does not publish an API port on the host. The `api` container listens on
-port `8000` internally; configure Dokploy to route to that service and port, with
-TLS and authentication-aware rate limiting at the edge.
-
-Useful operator commands:
-
-```console
-docker compose logs --follow api worker
-docker compose restart worker
-docker compose down
-```
-
-SQLite and local W&B files live in the `judge-data` volume. Checked-out repositories
-and result files live under `JUDGE_WORK_ROOT`. The `hf-cache` and `uv-cache`
-volumes persist model, dataset, and package caches across submissions and container
-restarts. Evaluator containers can download assets into these shared caches on
-their first run. `docker compose down` leaves the cache volumes in place.
-
-## Configure a student fork
-
-In the fork's GitHub settings, add:
-
-- Repository variable `JUDGE_URL`, such as `https://judge.example.org`
-- Repository variable `WANDB_PROJECT_URL`, such as
-  `https://wandb.ai/cerulean/study-group-online-judge`
-- Actions secret `JUDGE_API_TOKEN`, matching the deployed judge
-
-Then open **Actions**, choose **Submit to study group judge**, select **Run
-workflow** on `main`, and enter the task ID. The workflow submits the current commit,
-prints the queued job, provides its W&B run link, and exits as soon as the judge
-accepts it. The link becomes active when the worker claims the job. An Actions success
-therefore means "queued successfully," not "passed judging." Progress, logs, metrics,
-and the final result are available in W&B.
-
-The equivalent request is:
-
-```console
-curl --fail-with-body \
-  --request POST \
-  --header "Authorization: Bearer $JUDGE_API_TOKEN" \
-  --header "Content-Type: application/json" \
-  --data '{
-    "repo_url": "https://github.com/student/study-group.git",
-    "commit_sha": "0123456789abcdef0123456789abcdef01234567",
-    "task_id": "assignment-01",
-    "github_actor": "student"
-  }' \
-  "$JUDGE_URL/submissions"
-```
-
-## Security boundary
-
-Student code runs as a non-root user with network access, a read-only root
-filesystem, a read-only submission mount, writable shared HF and uv caches,
-dropped Linux capabilities, `no-new-privileges`, and CPU, memory, process, and
-time limits. The container receives neither the judge token nor W&B credentials.
-
-The trusted worker is different: access to the Docker socket is effectively
-host-level control. Do not run student-controlled worker code or expose that socket
-to evaluator containers.
-
-This MVP intentionally has no automatic recovery for a worker that dies after
-claiming a job. Such a job remains `running` and requires operator intervention.
-
-## Development
+### Development
 
 ```console
 uv sync --frozen
@@ -180,4 +72,46 @@ uv run ruff format --check .
 uv run ruff check .
 uv run ty check
 uv run python -W error::ResourceWarning -m unittest discover -s tests -v
+```
+
+The API exposes `GET /healthz`, `POST /submissions`, and `GET /jobs/{job_id}`.
+Submission and job routes require `Authorization: Bearer <JUDGE_API_TOKEN>`.
+
+### Deployment
+
+Requirements: Docker with Compose, access to the GHCR judge image, a W&B
+project and API key, and a host work directory writable by the judge container's
+UID/GID `10001`. GPU tasks also require the NVIDIA Container Toolkit.
+
+Copy `.env.example` to `.env` and set its required values. `JUDGE_WORK_ROOT`
+must be an absolute host path, mounted at the same path in the worker and its
+evaluator containers. For example:
+
+```console
+sudo mkdir -p /var/lib/study-group-online-judge/work
+sudo chown 10001:10001 /var/lib/study-group-online-judge/work
+stat -c '%g' /var/run/docker.sock
+```
+
+Set `DOCKER_GID` to the reported Docker socket group. The `999` in
+`.env.example` is an example socket group, not the judge user's UID or primary
+GID. Docker Desktop and OrbStack commonly report group `0`. Generate a
+submission token, then start the services:
+
+```console
+openssl rand -hex 32
+docker compose up -d
+docker compose ps
+```
+
+Compose does not publish an API port on the host. The `api` container listens
+on port `8000` internally; configure Dokploy to route to that service and
+port. SQLite and local W&B files live in `judge-data`. Checked-out repositories
+and result files live under `JUDGE_WORK_ROOT`. The HF and uv cache volumes
+persist downloads across submissions and container restarts.
+
+```console
+docker compose logs --follow api worker
+docker compose restart worker
+docker compose down
 ```
