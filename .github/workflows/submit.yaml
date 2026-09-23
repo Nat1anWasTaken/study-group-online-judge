@@ -8,7 +8,9 @@ on:
       task_id:
         description: Task ID
         required: true
-        type: string
+        type: choice
+        options:
+          - lab1
 
 permissions:
   contents: read
