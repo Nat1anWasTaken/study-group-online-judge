@@ -194,7 +194,7 @@ def main() -> None:
         work_root=Path(os.environ.get("JUDGE_WORK_ROOT", "work")),
         runner_image=runner_image,
         wandb_project=wandb_project,
-        wandb_entity=os.environ.get("WANDB_ENTITY"),
+        wandb_entity=os.environ.get("WANDB_ENTITY") or None,
         once=arguments.once,
     )
 
