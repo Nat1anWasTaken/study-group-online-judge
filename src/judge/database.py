@@ -147,6 +147,33 @@ def claim_next_job(path: Path) -> Job | None:
     return _job_from_row(claimed)
 
 
+def set_wandb_run(
+    path: Path,
+    job_id: str,
+    *,
+    run_id: str,
+    url: str | None,
+) -> Job:
+    """Attach a W&B run to a running job."""
+
+    with closing(_connect(path)) as connection, connection:
+        cursor = connection.execute(
+            """
+            UPDATE jobs
+            SET wandb_run_id = ?, wandb_url = ?
+            WHERE id = ? AND status = ?
+            """,
+            (run_id, url, job_id, JobStatus.RUNNING.value),
+        )
+        if cursor.rowcount != 1:
+            raise RuntimeError(f"Job {job_id!r} is not running")
+
+    job = get_job(path, job_id)
+    if job is None:
+        raise RuntimeError(f"Job {job_id!r} disappeared from the database")
+    return job
+
+
 def complete_job(path: Path, job_id: str, result: JudgeResult) -> Job:
     """Store a valid result and mark a running job completed."""
 

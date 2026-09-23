@@ -12,6 +12,7 @@ from judge.database import (
     fail_job,
     get_job,
     migrate_database,
+    set_wandb_run,
 )
 from judge.models import JobStatus, JudgeResult, Submission
 
@@ -98,6 +99,31 @@ class DatabaseTests(unittest.TestCase):
         self.assertEqual(completed.status, JobStatus.COMPLETED)
         self.assertTrue(completed.result and completed.result.passed)
         self.assertIsNotNone(completed.finished_at)
+
+    def test_attaches_a_wandb_run_to_a_running_job(self) -> None:
+        created = create_job(self.database_path, self.submission())
+        claim_next_job(self.database_path)
+
+        updated = set_wandb_run(
+            self.database_path,
+            created.id,
+            run_id="wandb-run",
+            url="https://wandb.example/run",
+        )
+
+        self.assertEqual(updated.wandb_run_id, "wandb-run")
+        self.assertEqual(updated.wandb_url, "https://wandb.example/run")
+
+    def test_rejects_attaching_a_wandb_run_to_a_queued_job(self) -> None:
+        created = create_job(self.database_path, self.submission())
+
+        with self.assertRaisesRegex(RuntimeError, "is not running"):
+            set_wandb_run(
+                self.database_path,
+                created.id,
+                run_id="wandb-run",
+                url=None,
+            )
 
     def test_fails_a_running_job_with_an_error(self) -> None:
         created = create_job(self.database_path, self.submission())
