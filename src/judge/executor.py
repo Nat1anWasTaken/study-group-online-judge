@@ -1,10 +1,12 @@
 import os
+import re
 import subprocess
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
+from typing import IO
 from uuid import uuid4
 
 from judge.models import Resources
@@ -19,6 +21,19 @@ class ExecutionTimeout(RuntimeError):
     pass
 
 
+def _output_lines(stream: IO[str]) -> Iterator[str]:
+    buffer: list[str] = []
+    while character := stream.read(1):
+        if character in "\r\n":
+            if buffer:
+                yield "".join(buffer) + "\n"
+                buffer.clear()
+        else:
+            buffer.append(character)
+    if buffer:
+        yield "".join(buffer) + "\n"
+
+
 class DockerExecutor:
     def __init__(
         self,
@@ -27,11 +42,15 @@ class DockerExecutor:
         user_id: int | None = None,
         group_id: int | None = None,
         docker_binary: str = "docker",
+        hf_cache_volume: str | None = None,
+        uv_cache_volume: str | None = None,
     ) -> None:
         self.image = image
         self.user_id = os.getuid() if user_id is None else user_id
         self.group_id = os.getgid() if group_id is None else group_id
         self.docker_binary = docker_binary
+        self.hf_cache_volume = hf_cache_volume
+        self.uv_cache_volume = uv_cache_volume
 
         if not image:
             raise ValueError("image must not be empty")
@@ -39,6 +58,12 @@ class DockerExecutor:
             raise ValueError(
                 "the Docker executor must run submissions as a non-root user"
             )
+        for volume in (hf_cache_volume, uv_cache_volume):
+            if (
+                volume is not None
+                and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", volume) is None
+            ):
+                raise ValueError("cache volume names must be valid Docker volume names")
 
     def run(
         self,
@@ -85,7 +110,7 @@ class DockerExecutor:
 
         try:
             assert process.stdout is not None
-            for line in process.stdout:
+            for line in _output_lines(process.stdout):
                 on_output(line)
             returncode = process.wait()
         except BaseException:
@@ -129,7 +154,7 @@ class DockerExecutor:
             "--name",
             container_name,
             "--network",
-            "none",
+            "bridge",
             "--read-only",
             "--cap-drop",
             "ALL",
@@ -152,6 +177,14 @@ class DockerExecutor:
             "--mount",
             f"type=bind,source={output_directory},target=/output",
         ]
+        for volume, target in (
+            (self.hf_cache_volume, "/home/judge/.cache/huggingface"),
+            (self.uv_cache_volume, "/home/judge/.cache/uv"),
+        ):
+            if volume:
+                command.extend(
+                    ["--mount", f"type=volume,source={volume},target={target}"]
+                )
         if resources.gpus:
             command.extend(["--gpus", str(resources.gpus)])
         command.extend(

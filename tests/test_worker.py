@@ -106,6 +106,10 @@ class WorkerTests(unittest.TestCase):
         self.assertEqual(completed.wandb_run_id, "wandb-run")
         self.assertEqual(completed.wandb_url, "https://wandb.example/run")
         self.mock_wandb_init.assert_called_once()
+        self.assertEqual(
+            self.mock_wandb_init.call_args.kwargs["name"],
+            f"example-student-{self.job.id[:8]}",
+        )
         self.wandb_run.log.assert_any_call(
             {"accuracy": 0.8, "score": 0.9, "passed": True}
         )
@@ -125,6 +129,43 @@ class WorkerTests(unittest.TestCase):
         self.assertEqual(self.wandb_run.summary["judge_status"], "completed")
         self.wandb_run.finish.assert_called_once_with()
         self.assertIn(f"[judge] completed job {self.job.id}\n", self.output)
+        self.assertIn("[judge] verdict: PASS\n", self.output)
+
+    def test_logs_failed_test_reason(self) -> None:
+        def execute(**arguments: object) -> ExecutionResult:
+            output_directory = arguments["output_directory"]
+            assert isinstance(output_directory, Path)
+            output_directory.mkdir()
+            (output_directory / "result.json").write_text(
+                JudgeResult(
+                    passed=False,
+                    score=0,
+                    tests=[
+                        TestResult(name="sample_01", passed=False, message="bad logits")
+                    ],
+                ).model_dump_json()
+            )
+            return ExecutionResult(returncode=0)
+
+        self.executor.run.side_effect = execute
+        with (
+            patch("judge.worker.checkout_repository", side_effect=self.fake_checkout),
+            patch("judge.worker.wandb.Table"),
+            patch("judge.worker.wandb.Artifact"),
+        ):
+            completed = run_job(
+                self.job,
+                database_path=self.database_path,
+                work_root=self.work_root,
+                executor=self.executor,
+                on_output=self.output.append,
+                wandb_project="study-group",
+            )
+
+        self.assertEqual(completed.status, JobStatus.COMPLETED)
+        self.assertFalse(completed.result and completed.result.passed)
+        self.assertIn("[judge] verdict: FAIL\n", self.output)
+        self.assertIn("[judge] failed sample_01: bad logits\n", self.output)
 
     def test_persists_checkout_failures(self) -> None:
         with patch(

@@ -31,6 +31,10 @@ Submission and job routes require `Authorization: Bearer <JUDGE_API_TOKEN>`.
 
 ## Define a task
 
+The first assignment is `lab1`. Students implement `gpt2_complete` in
+`src/labs/lab1.py`; the judge compares a batch of 20 Tiny Shakespeare prompts
+and their generation logits with the stock checkpoint.
+
 Each assignment is an ordinary `Task` subclass owned by the judge. It declares its
 resource limits and evaluates the checked-out submission:
 
@@ -116,7 +120,10 @@ docker compose down
 ```
 
 SQLite and local W&B files live in the `judge-data` volume. Checked-out repositories
-and result files live under `JUDGE_WORK_ROOT`.
+and result files live under `JUDGE_WORK_ROOT`. The `hf-cache` and `uv-cache`
+volumes persist model, dataset, and package caches across submissions and container
+restarts. Evaluator containers can download assets into these shared caches on
+their first run. `docker compose down` leaves the cache volumes in place.
 
 ## Configure a student fork
 
@@ -152,10 +159,10 @@ curl --fail-with-body \
 
 ## Security boundary
 
-Student code runs as a non-root user with no network, a read-only root filesystem,
-a read-only submission mount, dropped Linux capabilities, `no-new-privileges`, and
-CPU, memory, process, and time limits. The container receives neither the judge token
-nor W&B credentials.
+Student code runs as a non-root user with network access, a read-only root
+filesystem, a read-only submission mount, writable shared HF and uv caches,
+dropped Linux capabilities, `no-new-privileges`, and CPU, memory, process, and
+time limits. The container receives neither the judge token nor W&B credentials.
 
 The trusted worker is different: access to the Docker socket is effectively
 host-level control. Do not run student-controlled worker code or expose that socket

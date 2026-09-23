@@ -10,7 +10,10 @@ requires-python = ">=3.14"
 dependencies = [
     "fastapi[standard]>=0.141.1",
     "pydantic>=2.13.5",
+    "safetensors>=0.7,<1",
+    "torch>=2.10,<2.12",
     "tqdm>=4.70.1",
+    "transformers>=4.57,<5",
     "wandb>=0.30.0,<0.31",
 ]
 
@@ -19,6 +22,14 @@ dev = [
     "ruff>=0.16.8",
     "ty>=0.0.82",
 ]
+
+[tool.uv.sources]
+torch = [{ index = "pytorch-cpu", marker = "sys_platform == 'linux'" }]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
 
 [project.scripts]
 judge-server = "judge.main:app"
