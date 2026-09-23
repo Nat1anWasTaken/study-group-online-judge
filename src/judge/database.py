@@ -2,6 +2,7 @@ import json
 import sqlite3
 from contextlib import closing
 from datetime import UTC, datetime
+from fcntl import LOCK_EX, LOCK_UN, flock
 from importlib.resources import files
 from pathlib import Path
 from uuid import uuid4
@@ -15,7 +16,18 @@ def migrate_database(path: Path) -> None:
     """Apply each pending database migration in order."""
 
     path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = path.with_name(f"{path.name}.migrate.lock")
+    with lock_path.open("a") as lock:
+        flock(lock, LOCK_EX)
+        try:
+            _migrate_database(path)
+        finally:
+            flock(lock, LOCK_UN)
+
+
+def _migrate_database(path: Path) -> None:
     with closing(_connect(path)) as connection:
+        connection.execute("PRAGMA journal_mode = WAL")
         current_version = connection.execute("PRAGMA user_version").fetchone()[0]
         if current_version > len(MIGRATIONS):
             raise RuntimeError(
@@ -88,9 +100,115 @@ def get_job(path: Path, job_id: str) -> Job | None:
     return None if row is None else _job_from_row(row)
 
 
+def claim_next_job(path: Path) -> Job | None:
+    """Atomically move the oldest queued job into the running state."""
+
+    with closing(_connect(path)) as connection:
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                """
+                SELECT * FROM jobs
+                WHERE status = ?
+                ORDER BY created_at, id
+                LIMIT 1
+                """,
+                (JobStatus.QUEUED.value,),
+            ).fetchone()
+            if row is None:
+                connection.commit()
+                return None
+
+            started_at = datetime.now(UTC).isoformat()
+            connection.execute(
+                """
+                UPDATE jobs
+                SET status = ?, started_at = ?
+                WHERE id = ? AND status = ?
+                """,
+                (
+                    JobStatus.RUNNING.value,
+                    started_at,
+                    row["id"],
+                    JobStatus.QUEUED.value,
+                ),
+            )
+            claimed = connection.execute(
+                "SELECT * FROM jobs WHERE id = ?",
+                (row["id"],),
+            ).fetchone()
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+
+    if claimed is None:
+        raise RuntimeError("Claimed job disappeared from the database")
+    return _job_from_row(claimed)
+
+
+def complete_job(path: Path, job_id: str, result: JudgeResult) -> Job:
+    """Store a valid result and mark a running job completed."""
+
+    return _finish_job(
+        path,
+        job_id,
+        status=JobStatus.COMPLETED,
+        result_json=result.model_dump_json(),
+        error=None,
+    )
+
+
+def fail_job(path: Path, job_id: str, error: str) -> Job:
+    """Store an infrastructure error and mark a running job failed."""
+
+    return _finish_job(
+        path,
+        job_id,
+        status=JobStatus.ERROR,
+        result_json=None,
+        error=error,
+    )
+
+
+def _finish_job(
+    path: Path,
+    job_id: str,
+    *,
+    status: JobStatus,
+    result_json: str | None,
+    error: str | None,
+) -> Job:
+    finished_at = datetime.now(UTC).isoformat()
+    with closing(_connect(path)) as connection, connection:
+        cursor = connection.execute(
+            """
+            UPDATE jobs
+            SET status = ?, finished_at = ?, result_json = ?, error = ?
+            WHERE id = ? AND status = ?
+            """,
+            (
+                status.value,
+                finished_at,
+                result_json,
+                error,
+                job_id,
+                JobStatus.RUNNING.value,
+            ),
+        )
+        if cursor.rowcount != 1:
+            raise RuntimeError(f"Job {job_id!r} is not running")
+
+    job = get_job(path, job_id)
+    if job is None:
+        raise RuntimeError(f"Job {job_id!r} disappeared from the database")
+    return job
+
+
 def _connect(path: Path) -> sqlite3.Connection:
-    connection = sqlite3.connect(path)
+    connection = sqlite3.connect(path, timeout=30)
     connection.row_factory = sqlite3.Row
+    connection.execute("PRAGMA busy_timeout = 30000")
     return connection
 
 
