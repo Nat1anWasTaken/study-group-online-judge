@@ -14,6 +14,8 @@ services:
       - "${JUDGE_BIND_ADDRESS:-127.0.0.1}:${JUDGE_PORT:-8000}:8000"
     volumes:
       - judge-data:/data
+      - hf-cache:/home/judge/.cache/huggingface
+      - uv-cache:/home/judge/.cache/uv
     healthcheck:
       test:
         - CMD
@@ -38,6 +40,8 @@ services:
     environment:
       JUDGE_RUNNER_IMAGE: ${JUDGE_IMAGE:-cerulean-study-group-judge:local}
       JUDGE_WORK_ROOT: ${JUDGE_WORK_ROOT:?JUDGE_WORK_ROOT must be set}
+      JUDGE_HF_CACHE_VOLUME: ${JUDGE_HF_CACHE_VOLUME:-study-group-online-judge-hf-cache}
+      JUDGE_UV_CACHE_VOLUME: ${JUDGE_UV_CACHE_VOLUME:-study-group-online-judge-uv-cache}
       WANDB_API_KEY: ${WANDB_API_KEY:?WANDB_API_KEY must be set}
       WANDB_DIR: /data/wandb
       WANDB_ENTITY: ${WANDB_ENTITY:-}
@@ -47,6 +51,8 @@ services:
       - ${DOCKER_GID:?DOCKER_GID must be set}
     volumes:
       - judge-data:/data
+      - hf-cache:/home/judge/.cache/huggingface
+      - uv-cache:/home/judge/.cache/uv
       - type: bind
         source: ${JUDGE_WORK_ROOT:?JUDGE_WORK_ROOT must be set}
         target: ${JUDGE_WORK_ROOT:?JUDGE_WORK_ROOT must be set}
@@ -56,3 +62,7 @@ services:
 
 volumes:
   judge-data:
+  hf-cache:
+    name: ${JUDGE_HF_CACHE_VOLUME:-study-group-online-judge-hf-cache}
+  uv-cache:
+    name: ${JUDGE_UV_CACHE_VOLUME:-study-group-online-judge-uv-cache}

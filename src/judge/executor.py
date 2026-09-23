@@ -1,4 +1,5 @@
 import os
+import re
 import subprocess
 import threading
 from collections.abc import Callable
@@ -27,11 +28,15 @@ class DockerExecutor:
         user_id: int | None = None,
         group_id: int | None = None,
         docker_binary: str = "docker",
+        hf_cache_volume: str | None = None,
+        uv_cache_volume: str | None = None,
     ) -> None:
         self.image = image
         self.user_id = os.getuid() if user_id is None else user_id
         self.group_id = os.getgid() if group_id is None else group_id
         self.docker_binary = docker_binary
+        self.hf_cache_volume = hf_cache_volume
+        self.uv_cache_volume = uv_cache_volume
 
         if not image:
             raise ValueError("image must not be empty")
@@ -39,6 +44,12 @@ class DockerExecutor:
             raise ValueError(
                 "the Docker executor must run submissions as a non-root user"
             )
+        for volume in (hf_cache_volume, uv_cache_volume):
+            if (
+                volume is not None
+                and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", volume) is None
+            ):
+                raise ValueError("cache volume names must be valid Docker volume names")
 
     def run(
         self,
@@ -129,7 +140,7 @@ class DockerExecutor:
             "--name",
             container_name,
             "--network",
-            "none",
+            "bridge",
             "--read-only",
             "--cap-drop",
             "ALL",
@@ -152,6 +163,14 @@ class DockerExecutor:
             "--mount",
             f"type=bind,source={output_directory},target=/output",
         ]
+        for volume, target in (
+            (self.hf_cache_volume, "/home/judge/.cache/huggingface"),
+            (self.uv_cache_volume, "/home/judge/.cache/uv"),
+        ):
+            if volume:
+                command.extend(
+                    ["--mount", f"type=volume,source={volume},target={target}"]
+                )
         if resources.gpus:
             command.extend(["--gpus", str(resources.gpus)])
         command.extend(

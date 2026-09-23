@@ -148,13 +148,19 @@ def run_worker(
     runner_image: str,
     wandb_project: str,
     wandb_entity: str | None = None,
+    hf_cache_volume: str | None = None,
+    uv_cache_volume: str | None = None,
     poll_interval_seconds: float = 1,
     once: bool = False,
 ) -> Job | None:
     """Poll SQLite and process jobs one at a time."""
 
     migrate_database(database_path)
-    executor = DockerExecutor(runner_image)
+    executor = DockerExecutor(
+        runner_image,
+        hf_cache_volume=hf_cache_volume,
+        uv_cache_volume=uv_cache_volume,
+    )
 
     while True:
         job = claim_next_job(database_path)
@@ -195,6 +201,8 @@ def main() -> None:
         runner_image=runner_image,
         wandb_project=wandb_project,
         wandb_entity=os.environ.get("WANDB_ENTITY") or None,
+        hf_cache_volume=os.environ.get("JUDGE_HF_CACHE_VOLUME") or None,
+        uv_cache_volume=os.environ.get("JUDGE_UV_CACHE_VOLUME") or None,
         once=arguments.once,
     )
 

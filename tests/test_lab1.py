@@ -1,0 +1,76 @@
+import tempfile
+import unittest
+from pathlib import Path
+from unittest.mock import patch
+
+import torch
+
+from judge.tasks.lab1 import Lab1, _load_student_function
+
+
+class FakeTokenizer:
+    def encode(self, text: str) -> list[int]:
+        return list(range(12))
+
+    def decode(self, ids: list[int], skip_special_tokens: bool = False) -> str:
+        return f"prompt-{len(ids)}"
+
+
+class Lab1Tests(unittest.TestCase):
+    def test_loads_student_implementation_from_src_labs(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "src" / "labs" / "lab1.py"
+            source.parent.mkdir(parents=True)
+            source.write_text(
+                "def gpt2_complete(input, max_seq_length=1024):\n    return input, None\n"
+            )
+
+            complete = _load_student_function(Path(directory))
+
+            self.assertEqual(complete(["hello"]), (["hello"], None))
+
+    def evaluate_with(self, actual_logits: torch.Tensor):
+        expected_logits = torch.zeros((20, 4, 3), dtype=torch.float16)
+        completions = ["completion"] * 20
+
+        def student(prompts: list[str], max_seq_length: int):
+            self.assertEqual(len(prompts), 20)
+            self.assertEqual(set(prompts), {"prompt-6", "prompt-7", "prompt-8"})
+            self.assertEqual(max_seq_length, 10)
+            return completions, actual_logits
+
+        with (
+            patch("judge.tasks.lab1.AutoTokenizer.from_pretrained") as tokenizer,
+            patch("judge.tasks.lab1._load_student_function", return_value=student),
+            patch(
+                "judge.tasks.lab1._reference_completion",
+                return_value=(completions, expected_logits),
+            ),
+            patch("judge.tasks.lab1.torch.set_num_threads"),
+        ):
+            tokenizer.return_value = FakeTokenizer()
+            return Lab1().evaluate(Path("."))
+
+    def test_passes_all_20_matching_samples(self) -> None:
+        result = self.evaluate_with(torch.zeros((20, 4, 3), dtype=torch.float16))
+
+        self.assertTrue(result.passed)
+        self.assertEqual(result.score, 1)
+        self.assertEqual(len(result.tests), 20)
+
+    def test_fails_the_sample_with_wrong_logits(self) -> None:
+        logits = torch.zeros((20, 4, 3), dtype=torch.float16)
+        logits[2, 0, 0] = 1
+
+        result = self.evaluate_with(logits)
+
+        self.assertFalse(result.passed)
+        self.assertEqual(result.score, 0.95)
+        self.assertEqual(
+            [test.name for test in result.tests if not test.passed],
+            ["tiny_shakespeare_03"],
+        )
+
+
+if __name__ == "__main__":
+    unittest.main()
