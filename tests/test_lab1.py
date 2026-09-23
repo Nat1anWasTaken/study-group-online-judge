@@ -1,5 +1,7 @@
 import tempfile
 import unittest
+from contextlib import redirect_stdout
+from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
 
@@ -49,7 +51,11 @@ class Lab1Tests(unittest.TestCase):
             patch("judge.tasks.lab1.torch.set_num_threads"),
         ):
             tokenizer.return_value = FakeTokenizer()
-            return Lab1().evaluate(Path("."))
+            output = StringIO()
+            with redirect_stdout(output):
+                result = Lab1().evaluate(Path("."))
+            self.logs = output.getvalue()
+            return result
 
     def test_passes_all_20_matching_samples(self) -> None:
         result = self.evaluate_with(torch.zeros((20, 4, 3), dtype=torch.float16))
@@ -57,6 +63,9 @@ class Lab1Tests(unittest.TestCase):
         self.assertTrue(result.passed)
         self.assertEqual(result.score, 1)
         self.assertEqual(len(result.tests), 20)
+        self.assertIn("running student model", self.logs)
+        self.assertIn("validating samples", self.logs)
+        self.assertIn("20/20 samples passed", self.logs)
 
     def test_fails_the_sample_with_wrong_logits(self) -> None:
         logits = torch.zeros((20, 4, 3), dtype=torch.float16)
@@ -70,6 +79,27 @@ class Lab1Tests(unittest.TestCase):
             [test.name for test in result.tests if not test.passed],
             ["tiny_shakespeare_03"],
         )
+        self.assertIn("max_abs_diff=1", result.tests[2].message)
+        self.assertIn("tiny_shakespeare_03 failed", self.logs)
+
+    def test_logs_student_exception(self) -> None:
+        with (
+            patch("judge.tasks.lab1.AutoTokenizer.from_pretrained") as tokenizer,
+            patch(
+                "judge.tasks.lab1._load_student_function",
+                side_effect=RuntimeError("model download failed"),
+            ),
+            patch("judge.tasks.lab1.torch.set_num_threads"),
+        ):
+            tokenizer.return_value = FakeTokenizer()
+            output = StringIO()
+            with redirect_stdout(output):
+                result = Lab1().evaluate(Path("."))
+
+        self.assertFalse(result.passed)
+        self.assertEqual(result.tests[0].message, "RuntimeError: model download failed")
+        self.assertIn("student implementation failed", output.getvalue())
+        self.assertIn("Traceback", output.getvalue())
 
 
 if __name__ == "__main__":
