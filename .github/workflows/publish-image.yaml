@@ -18,23 +18,18 @@ jobs:
     steps:
       - uses: actions/checkout@v7.0.1
 
-      - name: Log in to GHCR
-        env:
-          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: printf '%s' "$GHCR_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build judge image
-        run: |
-          docker build \
-            --target judge \
-            --platform linux/amd64 \
-            --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
-            --label "org.opencontainers.image.revision=${GITHUB_SHA}" \
-            --tag "${IMAGE}:${GITHUB_SHA}" \
-            --tag "${IMAGE}:main" \
-            .
-
-      - name: Push judge image
-        run: |
-          docker push "${IMAGE}:${GITHUB_SHA}"
-          docker push "${IMAGE}:main"
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          target: judge
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ghcr.io/cerulean-works/study-group-online-judge:${{ github.sha }}
+            ghcr.io/cerulean-works/study-group-online-judge:main
