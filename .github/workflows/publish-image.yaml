@@ -1,0 +1,40 @@
+name: Publish judge image
+
+on:
+  push:
+    branches: [main]
+
+env:
+  IMAGE: ghcr.io/cerulean-works/study-group-online-judge
+
+jobs:
+  publish:
+    if: github.repository == 'cerulean-works/study-group-online-judge'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - uses: actions/checkout@v7.0.1
+
+      - name: Log in to GHCR
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: printf '%s' "$GHCR_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+
+      - name: Build judge image
+        run: |
+          docker build \
+            --target judge \
+            --platform linux/amd64 \
+            --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
+            --label "org.opencontainers.image.revision=${GITHUB_SHA}" \
+            --tag "${IMAGE}:${GITHUB_SHA}" \
+            --tag "${IMAGE}:main" \
+            .
+
+      - name: Push judge image
+        run: |
+          docker push "${IMAGE}:${GITHUB_SHA}"
+          docker push "${IMAGE}:main"
