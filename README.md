@@ -74,6 +74,7 @@ adds Docker's `--gpus` option.
 Requirements:
 
 - Docker with Compose
+- Access to `ghcr.io/cerulean-works/study-group-online-judge:main`
 - A host directory writable by UID/GID `10001` for temporary checkouts
 - A W&B project and API key
 - NVIDIA Container Toolkit when any task requests a GPU
@@ -103,13 +104,13 @@ Generate a submission token and start both services:
 
 ```console
 openssl rand -hex 32
-docker compose up --build --detach
+docker compose up -d
 docker compose ps
 ```
 
-The API listens on `127.0.0.1:8000` by default. Put TLS and authentication-aware
-rate limiting in a reverse proxy before exposing it publicly. Change
-`JUDGE_BIND_ADDRESS` only when the host firewall and proxy arrangement require it.
+Compose does not publish an API port on the host. The `api` container listens on
+port `8000` internally; configure Dokploy to route to that service and port, with
+TLS and authentication-aware rate limiting at the edge.
 
 Useful operator commands:
 
