@@ -1,0 +1,75 @@
+name: Submit to study group judge
+
+run-name: Judge ${{ inputs.task_id }} at ${{ github.sha }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      task_id:
+        description: Task ID
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  submit:
+    name: Queue exact commit
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Queue commit
+        env:
+          GITHUB_ACTOR_NAME: ${{ github.actor }}
+          JUDGE_API_TOKEN: ${{ secrets.JUDGE_API_TOKEN }}
+          JUDGE_URL: ${{ vars.JUDGE_URL }}
+          REPOSITORY: ${{ github.repository }}
+          REVISION: ${{ github.sha }}
+          TASK_ID: ${{ inputs.task_id }}
+          WANDB_PROJECT_URL: ${{ vars.WANDB_PROJECT_URL }}
+        run: |
+          : "${JUDGE_URL:?Set the JUDGE_URL repository variable}"
+          : "${JUDGE_API_TOKEN:?Set the JUDGE_API_TOKEN Actions secret}"
+          : "${WANDB_PROJECT_URL:?Set the WANDB_PROJECT_URL repository variable}"
+
+          payload="$(
+            jq --null-input \
+              --arg repo_url "https://github.com/${REPOSITORY}.git" \
+              --arg commit_sha "$REVISION" \
+              --arg task_id "$TASK_ID" \
+              --arg github_actor "$GITHUB_ACTOR_NAME" \
+              '{
+                repo_url: $repo_url,
+                commit_sha: $commit_sha,
+                task_id: $task_id,
+                github_actor: $github_actor
+              }'
+          )"
+
+          response_file="$RUNNER_TEMP/judge-response.json"
+          curl --connect-timeout 10 \
+            --max-time 30 \
+            --fail-with-body --silent --show-error \
+            --request POST \
+            --header "Authorization: Bearer $JUDGE_API_TOKEN" \
+            --header "Content-Type: application/json" \
+            --data "$payload" \
+            --output "$response_file" \
+            "${JUDGE_URL%/}/submissions"
+
+          jq . "$response_file"
+          job_id="$(jq --exit-status --raw-output '.id' "$response_file")"
+          wandb_url="${WANDB_PROJECT_URL%/}/runs/$job_id"
+          echo "::notice title=Submission queued::W&B logs: $wandb_url"
+          {
+            echo "## Submission queued"
+            echo
+            echo "Job \`$job_id\` was accepted by the judge."
+            echo
+            echo "[Open W&B logs]($wandb_url)"
+            echo
+            echo "The link becomes active when the worker starts this job."
+          } >> "$GITHUB_STEP_SUMMARY"

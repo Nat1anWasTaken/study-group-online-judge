@@ -1,0 +1,58 @@
+name: study-group-online-judge
+
+services:
+  api:
+    image: ${JUDGE_IMAGE:-cerulean-study-group-judge:local}
+    build:
+      context: .
+      target: judge
+    init: true
+    restart: unless-stopped
+    environment:
+      JUDGE_API_TOKEN: ${JUDGE_API_TOKEN:?JUDGE_API_TOKEN must be set}
+    ports:
+      - "${JUDGE_BIND_ADDRESS:-127.0.0.1}:${JUDGE_PORT:-8000}:8000"
+    volumes:
+      - judge-data:/data
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - >-
+          import urllib.request;
+          urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=2).close()
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+
+  worker:
+    image: ${JUDGE_IMAGE:-cerulean-study-group-judge:local}
+    build:
+      context: .
+      target: judge
+    init: true
+    restart: unless-stopped
+    command: ["python", "-m", "judge.worker"]
+    environment:
+      JUDGE_RUNNER_IMAGE: ${JUDGE_IMAGE:-cerulean-study-group-judge:local}
+      JUDGE_WORK_ROOT: ${JUDGE_WORK_ROOT:?JUDGE_WORK_ROOT must be set}
+      WANDB_API_KEY: ${WANDB_API_KEY:?WANDB_API_KEY must be set}
+      WANDB_DIR: /data/wandb
+      WANDB_ENTITY: ${WANDB_ENTITY:-}
+      WANDB_MODE: ${WANDB_MODE:-online}
+      WANDB_PROJECT: ${WANDB_PROJECT:?WANDB_PROJECT must be set}
+    group_add:
+      - ${DOCKER_GID:?DOCKER_GID must be set}
+    volumes:
+      - judge-data:/data
+      - type: bind
+        source: ${JUDGE_WORK_ROOT:?JUDGE_WORK_ROOT must be set}
+        target: ${JUDGE_WORK_ROOT:?JUDGE_WORK_ROOT must be set}
+      - type: bind
+        source: /var/run/docker.sock
+        target: /var/run/docker.sock
+
+volumes:
+  judge-data:
