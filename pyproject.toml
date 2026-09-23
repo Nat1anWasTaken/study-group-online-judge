@@ -10,6 +10,8 @@ requires-python = ">=3.14"
 dependencies = [
     "fastapi[standard]>=0.141.1",
     "pydantic>=2.13.5",
+    "tqdm>=4.70.1",
+    "wandb>=0.30.0,<0.31",
 ]
 
 [dependency-groups]

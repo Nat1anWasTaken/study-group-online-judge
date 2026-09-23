@@ -7,4 +7,4 @@ router = APIRouter(tags=["Healthz"])
 async def healthz():
     """Returns health signal for server"""
 
-    return {"status", "ok"}
+    return {"status": "ok"}
