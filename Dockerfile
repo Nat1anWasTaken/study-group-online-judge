@@ -24,7 +24,12 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 
 FROM base AS judge
 
-RUN groupadd --gid 10001 judge \
+COPY --from=docker:29.4.0-cli /usr/local/bin/docker /usr/local/bin/docker
+
+RUN apt-get update \
+    && DEBIAN_FRONTEND=noninteractive apt-get install --yes --no-install-recommends git \
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd --gid 10001 judge \
     && useradd --uid 10001 --gid 10001 --create-home judge \
     && mkdir -p /data \
     && chown judge:judge /data
