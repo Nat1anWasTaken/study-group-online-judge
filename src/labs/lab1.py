@@ -1,3 +1,5 @@
+import math
+
 import torch
 from huggingface_hub import hf_hub_download
 from safetensors.torch import load_file
@@ -5,6 +7,17 @@ from tokenizers import Tokenizer
 from torch import nn
 
 MODEL_ID = "openai-community/gpt2"
+
+
+def gelu(x: torch.Tensor) -> torch.Tensor:
+    return (
+        0.5
+        * x
+        * (
+            1.0
+            + torch.tanh(math.sqrt(2.0 / math.pi) * (x + 0.044715 * torch.pow(x, 3.0)))
+        )
+    )
 
 
 def load_weights() -> dict[str, torch.Tensor]:
@@ -129,7 +142,7 @@ def transformer_block(
 
     normalized_for_mlp = load_second_layer_norm(weights, layer_index)(after_attention)
     mlp_expanded = mlp_first_projection(normalized_for_mlp, weights, layer_index)
-    mlp_activated = torch.nn.functional.gelu(mlp_expanded, approximate="tanh")
+    mlp_activated = gelu(mlp_expanded)
     mlp_projected = mlp_second_projection(mlp_activated, weights, layer_index)
     return after_attention + mlp_projected
 
