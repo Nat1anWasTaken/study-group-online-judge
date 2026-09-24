@@ -236,6 +236,30 @@ def gpt2_complete(
             next_logits = next_logits.masked_fill(~active[:, None], 0)
             step_logits.append(next_logits)
             next_ids = next_logits.argmax(dim=-1).masked_fill(~active, eos_id)
+
+            # TEMP: inspect the near-tied tokens in tiny_shakespeare_14.
+            for index, prompt in enumerate(input):
+                if prompt != "our pikes, ere we" or not bool(active[index]):
+                    continue
+                context = tokenizer.decode(
+                    token_ids[index, attention_mask[index]].tolist()
+                )
+                if context != "our pikes, ere we had the":
+                    continue
+                scores = {
+                    word: float(next_logits[index, tokenizer.encode(word).ids[0]])
+                    for word in (" time", " opportunity")
+                }
+                selected_id = int(next_ids[index])
+                print(
+                    f"[lab1 debug] context={context!r}; "
+                    f"dtype={next_logits.dtype}; logits={scores}; "
+                    f"opportunity_minus_time={scores[' opportunity'] - scores[' time']}; "
+                    f"selected_id={selected_id}; "
+                    f"selected={tokenizer.decode([selected_id])!r}",
+                    flush=True,
+                )
+
             generated_ids.append(next_ids)
 
             lengths = lengths + active.long()
