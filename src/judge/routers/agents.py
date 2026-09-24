@@ -6,8 +6,15 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from judge.agent_channel import AgentPollConflict, UnknownOffer
-from judge.database import get_sub_judge, register_sub_judge
-from judge.models import JobOffer, JobReceipt, SubJudge, SubJudgeRegistration
+from judge.database import append_remote_event, get_sub_judge, register_sub_judge
+from judge.models import (
+    Job,
+    JobOffer,
+    JobReceipt,
+    RemoteEvent,
+    SubJudge,
+    SubJudgeRegistration,
+)
 from judge.tasks import TASKS
 
 bearer = HTTPBearer(auto_error=False)
@@ -79,3 +86,15 @@ async def acknowledge(
     except ValueError as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.post("/{judge_id}/jobs/{job_id}/events", response_model=Job)
+def report_event(
+    judge_id: str, job_id: str, event: RemoteEvent, request: Request
+) -> Job:
+    try:
+        return append_remote_event(
+            request.app.state.database_path, judge_id, job_id, event
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error

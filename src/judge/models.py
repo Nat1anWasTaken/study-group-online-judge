@@ -28,6 +28,13 @@ class SubJudgeBackend(StrEnum):
     SLURM = "slurm"
 
 
+class RemoteEventKind(StrEnum):
+    STARTED = "started"
+    LOG = "log"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
 class Submission(BaseModel):
     """An immutable repository revision submitted for one task."""
 
@@ -124,6 +131,34 @@ class JobReceipt(BaseModel):
                 raise ValueError("accepted receipts must not contain an error")
         elif not self.error or self.slurm_job_id is not None:
             raise ValueError("rejected receipts require an error and no Slurm job ID")
+        return self
+
+
+class RemoteEvent(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    sequence: int = Field(ge=1)
+    kind: RemoteEventKind
+    slurm_job_id: str = Field(min_length=1)
+    line: str | None = Field(default=None, max_length=8192)
+    result: JudgeResult | None = None
+    error: str | None = Field(default=None, max_length=8192)
+
+    @model_validator(mode="after")
+    def validate_payload(self) -> Self:
+        required = {
+            RemoteEventKind.STARTED: (False, False, False),
+            RemoteEventKind.LOG: (True, False, False),
+            RemoteEventKind.COMPLETED: (False, True, False),
+            RemoteEventKind.FAILED: (False, False, True),
+        }[self.kind]
+        present = (
+            self.line is not None,
+            self.result is not None,
+            self.error is not None,
+        )
+        if present != required:
+            raise ValueError(f"Invalid payload for {self.kind.value} event")
         return self
 
 

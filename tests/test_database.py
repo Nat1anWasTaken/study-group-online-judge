@@ -47,9 +47,10 @@ class DatabaseTests(unittest.TestCase):
                 "SELECT name FROM sqlite_master WHERE type = 'table'"
             ).fetchall()
 
-        self.assertEqual(version, 2)
+        self.assertEqual(version, 3)
         self.assertIn(("jobs",), tables)
         self.assertIn(("sub_judges",), tables)
+        self.assertIn(("remote_events",), tables)
 
     def test_upgrades_a_database_with_existing_jobs(self) -> None:
         legacy_path = Path(self.temporary_directory.name) / "legacy.db"
@@ -86,7 +87,7 @@ class DatabaseTests(unittest.TestCase):
         with closing(sqlite3.connect(database_path)) as connection:
             version = connection.execute("PRAGMA user_version").fetchone()[0]
 
-        self.assertEqual(version, 2)
+        self.assertEqual(version, 3)
 
     def test_round_trips_a_queued_job(self) -> None:
         submission = Submission(
