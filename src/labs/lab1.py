@@ -65,14 +65,15 @@ def load_embedding_layers(
 
 
 def embed_token_ids(
-    ids: list[int], wte: nn.Embedding, wpe: nn.Embedding
+    token_ids: torch.Tensor,
+    attention_mask: torch.Tensor,
+    wte: nn.Embedding,
+    wpe: nn.Embedding,
 ) -> torch.Tensor:
-    token_ids = torch.tensor(ids, dtype=torch.long, device=wte.weight.device)
-
-    if token_ids.numel() > 1024:
+    positions = (attention_mask.long().cumsum(dim=-1) - 1).clamp_min(0)
+    if bool((positions >= wpe.num_embeddings).any()):
         raise ValueError("Token sequence exceeds GPT-2's 1024-token context length")
 
-    positions = torch.arange(token_ids.numel(), device=token_ids.device)
     return wte(token_ids) + wpe(positions)
 
 
@@ -95,7 +96,10 @@ def mlp_second_projection(
 
 
 def transformer_block(
-    hidden: torch.Tensor, weights: dict[str, torch.Tensor], layer_index: int
+    hidden: torch.Tensor,
+    attention_mask: torch.Tensor,
+    weights: dict[str, torch.Tensor],
+    layer_index: int,
 ) -> torch.Tensor:
     prefix = f"h.{layer_index}"
     normalized = load_first_layer_norm(weights, layer_index)(hidden)
@@ -106,20 +110,22 @@ def transformer_block(
     )
     q, k, v = qkv.chunk(3, dim=-1)
 
-    query = q.reshape(q.shape[0], 12, 64).transpose(0, 1)
-    key = k.reshape(k.shape[0], 12, 64).transpose(0, 1)
-    value = v.reshape(v.shape[0], 12, 64).transpose(0, 1)
+    batch_size, token_count, _ = hidden.shape
+    query = q.reshape(batch_size, token_count, 12, 64).transpose(1, 2)
+    key = k.reshape(batch_size, token_count, 12, 64).transpose(1, 2)
+    value = v.reshape(batch_size, token_count, 12, 64).transpose(1, 2)
 
     attention_scores = torch.matmul(query, key.transpose(-2, -1)) / 8
-    token_count = attention_scores.shape[-1]
     causal_mask = torch.ones(
-        token_count, token_count, dtype=torch.bool, device=attention_scores.device
+        token_count, token_count, dtype=torch.bool, device=hidden.device
     ).tril()
+    allowed = causal_mask[None, None, :, :] & attention_mask[:, None, None, :]
     attention_weights = torch.softmax(
-        attention_scores.masked_fill(~causal_mask, float("-inf")), dim=-1
+        attention_scores.masked_fill(~allowed, torch.finfo(attention_scores.dtype).min),
+        dim=-1,
     )
     context = torch.matmul(attention_weights, value)
-    combined_context = context.transpose(0, 1).reshape(token_count, 768)
+    combined_context = context.transpose(1, 2).reshape(batch_size, token_count, 768)
 
     projected_attention = (
         torch.matmul(combined_context, weights[f"{prefix}.attn.c_proj.weight"])
@@ -139,18 +145,19 @@ def project_to_vocabulary(hidden: torch.Tensor, wte: nn.Embedding) -> torch.Tens
 
 
 def gpt2_logits(
-    token_ids: list[int],
+    token_ids: torch.Tensor,
+    attention_mask: torch.Tensor,
     weights: dict[str, torch.Tensor],
     wte: nn.Embedding,
     wpe: nn.Embedding,
     final_ln: nn.LayerNorm,
 ) -> torch.Tensor:
-    hidden = embed_token_ids(token_ids, wte, wpe)
+    hidden = embed_token_ids(token_ids, attention_mask, wte, wpe)
 
     for layer_index in range(12):
-        hidden = transformer_block(hidden, weights, layer_index)
+        hidden = transformer_block(hidden, attention_mask, weights, layer_index)
 
-    return project_to_vocabulary(final_ln(hidden[-1]), wte)
+    return project_to_vocabulary(final_ln(hidden[:, -1]), wte)
 
 
 def gpt2_complete(
@@ -203,41 +210,53 @@ def gpt2_complete(
         if len(token_ids) > max_seq_length:
             raise ValueError("Prompt exceeds max_seq_length")
 
-    generated_ids: list[list[int]] = [[] for _ in sequences]
-    step_logits: list[list[torch.Tensor]] = [[] for _ in sequences]
-    finished = [len(token_ids) == max_seq_length for token_ids in sequences]
+    if not sequences:
+        return [], wte.weight.new_empty((0, 0, wte.num_embeddings))
 
+    device = wte.weight.device
+    lengths = torch.tensor([len(ids) for ids in sequences], device=device)
+    width = int(lengths.max())
+    token_ids = torch.full(
+        (len(sequences), width), eos_id, dtype=torch.long, device=device
+    )
+    attention_mask = torch.zeros_like(token_ids, dtype=torch.bool)
+    for index, ids in enumerate(sequences):
+        token_ids[index, -len(ids) :] = torch.tensor(ids, device=device)
+        attention_mask[index, -len(ids) :] = True
+
+    finished = lengths >= max_seq_length
+    step_logits: list[torch.Tensor] = []
+    generated_ids: list[torch.Tensor] = []
     with torch.inference_mode():
-        while not all(finished):
-            for index, token_ids in enumerate(sequences):
-                if finished[index]:
-                    continue
+        while not bool(finished.all()):
+            next_logits = gpt2_logits(
+                token_ids, attention_mask, weights, wte, wpe, final_ln
+            )
+            active = ~finished
+            next_logits = next_logits.masked_fill(~active[:, None], 0)
+            step_logits.append(next_logits)
+            next_ids = next_logits.argmax(dim=-1).masked_fill(~active, eos_id)
+            generated_ids.append(next_ids)
 
-                next_logits = gpt2_logits(token_ids, weights, wte, wpe, final_ln)
-                step_logits[index].append(next_logits)
-                next_id = int(next_logits.argmax())
+            lengths = lengths + active.long()
+            finished = finished | (next_ids == eos_id) | (lengths >= max_seq_length)
+            token_ids = torch.cat((token_ids, next_ids[:, None]), dim=1)
+            attention_mask = torch.cat((attention_mask, active[:, None]), dim=1)
 
-                if next_id == eos_id:
-                    finished[index] = True
-                    continue
-
-                token_ids.append(next_id)
-                generated_ids[index].append(next_id)
-                finished[index] = len(token_ids) == max_seq_length
-
-    completions = [
-        tokenizer.decode(ids, skip_special_tokens=True) for ids in generated_ids
-    ]
-
-    all_logits = [
-        torch.stack(logits) if logits else wte.weight.new_empty((0, wte.num_embeddings))
-        for logits in step_logits
-    ]
-
-    if not all_logits:
-        return completions, wte.weight.new_empty((0, 0, wte.num_embeddings))
-
-    return completions, nn.utils.rnn.pad_sequence(all_logits, batch_first=True)
+    completions = (
+        [
+            tokenizer.decode(ids, skip_special_tokens=True)
+            for ids in torch.stack(generated_ids, dim=1).tolist()
+        ]
+        if generated_ids
+        else ["" for _ in sequences]
+    )
+    logits = (
+        torch.stack(step_logits, dim=1)
+        if step_logits
+        else wte.weight.new_empty((len(sequences), 0, wte.num_embeddings))
+    )
+    return completions, logits
 
 
 def main():
