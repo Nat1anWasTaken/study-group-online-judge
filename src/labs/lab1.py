@@ -1,3 +1,5 @@
+import math
+
 import torch
 from huggingface_hub import hf_hub_download
 from safetensors.torch import load_file
@@ -5,6 +7,19 @@ from tokenizers import Tokenizer
 from torch import nn
 
 MODEL_ID = "openai-community/gpt2"
+
+def gelu(mlp_expanded: float):
+    return (
+        0.5
+        * mlp_expanded
+        * (
+            1.0
+            + torch.tanh(
+                math.sqrt(2.0 / math.pi)
+                * (mlp_expanded + 0.044715 * torch.pow(mlp_expanded, 3.0))
+            )
+        )
+    )
 
 
 def load_weights() -> dict[str, torch.Tensor]:
@@ -77,21 +92,32 @@ def embed_token_ids(
     return wte(token_ids) + wpe(positions)
 
 
+def linear_projection(
+    hidden: torch.Tensor, weight: torch.Tensor, bias: torch.Tensor
+) -> torch.Tensor:
+    # Match GPT-2's Conv1D: accumulate the matrix product and bias together.
+    return torch.addmm(bias, hidden.reshape(-1, hidden.shape[-1]), weight).reshape(
+        *hidden.shape[:-1], weight.shape[-1]
+    )
+
+
 def mlp_first_projection(
     normalized: torch.Tensor, weights: dict[str, torch.Tensor], layer_index: int
 ) -> torch.Tensor:
-    return (
-        torch.matmul(normalized, weights[f"h.{layer_index}.mlp.c_fc.weight"])
-        + weights[f"h.{layer_index}.mlp.c_fc.bias"]
+    return linear_projection(
+        normalized,
+        weights[f"h.{layer_index}.mlp.c_fc.weight"],
+        weights[f"h.{layer_index}.mlp.c_fc.bias"],
     )
 
 
 def mlp_second_projection(
     activated: torch.Tensor, weights: dict[str, torch.Tensor], layer_index: int
 ) -> torch.Tensor:
-    return (
-        torch.matmul(activated, weights[f"h.{layer_index}.mlp.c_proj.weight"])
-        + weights[f"h.{layer_index}.mlp.c_proj.bias"]
+    return linear_projection(
+        activated,
+        weights[f"h.{layer_index}.mlp.c_proj.weight"],
+        weights[f"h.{layer_index}.mlp.c_proj.bias"],
     )
 
 
@@ -104,9 +130,10 @@ def transformer_block(
     prefix = f"h.{layer_index}"
     normalized = load_first_layer_norm(weights, layer_index)(hidden)
 
-    qkv = (
-        torch.matmul(normalized, weights[f"{prefix}.attn.c_attn.weight"])
-        + weights[f"{prefix}.attn.c_attn.bias"]
+    qkv = linear_projection(
+        normalized,
+        weights[f"{prefix}.attn.c_attn.weight"],
+        weights[f"{prefix}.attn.c_attn.bias"],
     )
     q, k, v = qkv.chunk(3, dim=-1)
 
@@ -115,27 +142,27 @@ def transformer_block(
     key = k.reshape(batch_size, token_count, 12, 64).transpose(1, 2)
     value = v.reshape(batch_size, token_count, 12, 64).transpose(1, 2)
 
-    attention_scores = torch.matmul(query, key.transpose(-2, -1)) / 8
     causal_mask = torch.ones(
         token_count, token_count, dtype=torch.bool, device=hidden.device
     ).tril()
     allowed = causal_mask[None, None, :, :] & attention_mask[:, None, None, :]
-    attention_weights = torch.softmax(
-        attention_scores.masked_fill(~allowed, torch.finfo(attention_scores.dtype).min),
-        dim=-1,
+    context = torch.nn.functional.scaled_dot_product_attention(
+        query, key, value, attn_mask=allowed, dropout_p=0.0
     )
-    context = torch.matmul(attention_weights, value)
     combined_context = context.transpose(1, 2).reshape(batch_size, token_count, 768)
 
-    projected_attention = (
-        torch.matmul(combined_context, weights[f"{prefix}.attn.c_proj.weight"])
-        + weights[f"{prefix}.attn.c_proj.bias"]
+    projected_attention = linear_projection(
+        combined_context,
+        weights[f"{prefix}.attn.c_proj.weight"],
+        weights[f"{prefix}.attn.c_proj.bias"],
     )
     after_attention = hidden + projected_attention
 
     normalized_for_mlp = load_second_layer_norm(weights, layer_index)(after_attention)
     mlp_expanded = mlp_first_projection(normalized_for_mlp, weights, layer_index)
-    mlp_activated = torch.nn.functional.gelu(mlp_expanded, approximate="tanh")
+
+    mlp_activated = gelu(mlp_expanded)
+
     mlp_projected = mlp_second_projection(mlp_activated, weights, layer_index)
     return after_attention + mlp_projected
 
