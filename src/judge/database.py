@@ -11,12 +11,14 @@ from judge.models import (
     Job,
     JobStatus,
     JudgeResult,
+    RemoteEvent,
+    RemoteEventKind,
     SubJudge,
     SubJudgeBackend,
     Submission,
 )
 
-MIGRATIONS = ("001_initial.sql", "002_sub_judges.sql")
+MIGRATIONS = ("001_initial.sql", "002_sub_judges.sql", "003_remote_events.sql")
 
 
 def migrate_database(path: Path) -> None:
@@ -322,14 +324,16 @@ def set_wandb_run(
     run_id: str,
     url: str | None,
 ) -> Job:
-    """Attach a W&B run to a running job."""
+    """Attach a W&B run to a local or remotely completed job."""
 
     with closing(_connect(path)) as connection, connection:
         cursor = connection.execute(
             """
             UPDATE jobs
             SET wandb_run_id = ?, wandb_url = ?
-            WHERE id = ? AND status = ?
+            WHERE id = ? AND (
+                status = ? OR assigned_judge_id IS NOT NULL
+            )
             """,
             (run_id, url, job_id, JobStatus.RUNNING.value),
         )
@@ -391,6 +395,129 @@ def fail_remote_dispatch(path: Path, job_id: str, error: str) -> Job:
     if job is None:
         raise RuntimeError(f"Job {job_id!r} disappeared from the database")
     return job
+
+
+def append_remote_event(
+    path: Path, judge_id: str, job_id: str, event: RemoteEvent
+) -> Job:
+    """Apply one ordered remote event exactly once to the master database."""
+
+    encoded = event.model_dump_json()
+    with closing(_connect(path)) as connection:
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT * FROM jobs WHERE id = ? AND assigned_judge_id = ?",
+                (job_id, judge_id),
+            ).fetchone()
+            if row is None:
+                raise ValueError("Job is not assigned to this sub-judge")
+            existing = connection.execute(
+                "SELECT event_json FROM remote_events WHERE job_id = ? AND sequence = ?",
+                (job_id, event.sequence),
+            ).fetchone()
+            if existing is not None:
+                if existing["event_json"] != encoded:
+                    raise ValueError("Event sequence already contains different data")
+                connection.commit()
+                job = get_job(path, job_id)
+                assert job is not None
+                return job
+            last = connection.execute(
+                "SELECT COALESCE(MAX(sequence), 0) FROM remote_events WHERE job_id = ?",
+                (job_id,),
+            ).fetchone()[0]
+            if event.sequence != last + 1:
+                raise ValueError(f"Expected event sequence {last + 1}")
+            if row["slurm_job_id"] not in (None, event.slurm_job_id):
+                raise ValueError("Slurm job ID does not match the scheduling receipt")
+
+            status = JobStatus(row["status"])
+            if event.kind == RemoteEventKind.STARTED:
+                if status not in (JobStatus.DISPATCHING, JobStatus.QUEUED):
+                    raise ValueError("Job cannot start from its current state")
+                connection.execute(
+                    """
+                    UPDATE jobs SET status = ?, started_at = ?, slurm_job_id = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        JobStatus.RUNNING.value,
+                        datetime.now(UTC).isoformat(),
+                        event.slurm_job_id,
+                        job_id,
+                    ),
+                )
+            else:
+                if status != JobStatus.RUNNING:
+                    raise ValueError("Job is not running")
+                if event.kind in (RemoteEventKind.COMPLETED, RemoteEventKind.FAILED):
+                    connection.execute(
+                        """
+                        UPDATE jobs SET status = ?, finished_at = ?, result_json = ?, error = ?
+                        WHERE id = ?
+                        """,
+                        (
+                            (
+                                JobStatus.COMPLETED
+                                if event.kind == RemoteEventKind.COMPLETED
+                                else JobStatus.ERROR
+                            ).value,
+                            datetime.now(UTC).isoformat(),
+                            event.result.model_dump_json() if event.result else None,
+                            event.error,
+                            job_id,
+                        ),
+                    )
+
+            connection.execute(
+                """
+                INSERT INTO remote_events (job_id, sequence, event_json, reported_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                (job_id, event.sequence, encoded, datetime.now(UTC).isoformat()),
+            )
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+
+    job = get_job(path, job_id)
+    assert job is not None
+    return job
+
+
+def next_unreported_event(path: Path) -> tuple[Job, RemoteEvent] | None:
+    """Return the next durable event in per-job order for W&B publication."""
+
+    with closing(_connect(path)) as connection:
+        row = connection.execute(
+            """
+            SELECT e.job_id, e.event_json FROM remote_events e
+            LEFT JOIN remote_report_cursor c ON c.job_id = e.job_id
+            WHERE e.sequence = COALESCE(c.last_sequence, 0) + 1
+            ORDER BY e.reported_at, e.job_id LIMIT 1
+            """
+        ).fetchone()
+    if row is None:
+        return None
+    job = get_job(path, row["job_id"])
+    assert job is not None
+    return job, RemoteEvent.model_validate_json(row["event_json"])
+
+
+def mark_remote_event_reported(path: Path, job_id: str, sequence: int) -> None:
+    with closing(_connect(path)) as connection, connection:
+        cursor = connection.execute(
+            """
+            INSERT INTO remote_report_cursor (job_id, last_sequence) VALUES (?, ?)
+            ON CONFLICT(job_id) DO UPDATE SET last_sequence = excluded.last_sequence
+            WHERE remote_report_cursor.last_sequence = excluded.last_sequence - 1
+            """,
+            (job_id, sequence),
+        )
+        if cursor.rowcount != 1:
+            raise RuntimeError("Remote report cursor is out of order")
 
 
 def _finish_job(
