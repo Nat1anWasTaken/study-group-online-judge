@@ -56,6 +56,10 @@ identical subjects and choices, repeat. The H200 judge evaluates every test
 question against GPT-2 Small. It reports overall agreement and per-subject
 mismatch row numbers and hash prefixes to W&B, not one W&B row per question.
 Lab 2 passes when at least 97% of the predictions match and has no scoreboard.
+Its W&B `score` is the fraction matching the GPT-2 reference, and
+`samples_passed` is the corresponding question count. `mmlu_accuracy` is the
+fraction of participant predictions matching MMLU's answer labels, not the
+fraction matching the reference.
 
 For a GPU task, also put an editable `src/labs/labX.sbatch` in your fork,
 replacing `X` with the task number. The Nano4 sub-judge submits that file to
