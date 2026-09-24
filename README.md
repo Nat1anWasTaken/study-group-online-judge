@@ -82,7 +82,7 @@ uv sync --frozen
 uv run ruff format --check .
 uv run ruff check .
 uv run ty check
-uv run python -W error::ResourceWarning -m unittest discover -s tests -v
+uv run python -m pytest -q tests
 ```
 
 The API exposes `GET /healthz`, `POST /submissions`, and `GET /jobs/{job_id}`.
