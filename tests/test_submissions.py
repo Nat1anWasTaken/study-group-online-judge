@@ -1,13 +1,17 @@
 import os
 import tempfile
+import time
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from fastapi.testclient import TestClient
 
+from judge.agent_channel import AgentUnavailable
+from judge.database import get_job_by_request_key
 from judge.main import app
-from judge.models import JudgeResult
+from judge.models import JobReceipt, JudgeResult, Resources
 from judge.tasks import TASKS
 from judge.tasks.base import Task
 
@@ -19,22 +23,32 @@ class ExampleTask(Task):
         return JudgeResult(passed=submission.is_dir())
 
 
+class GpuTask(Task):
+    id = "gpu-example"
+    resources = Resources(gpus=1)
+
+    def evaluate(self, submission: Path) -> JudgeResult:
+        return JudgeResult(passed=submission.is_dir())
+
+
 class SubmissionRouteTests(unittest.TestCase):
     def setUp(self) -> None:
         self.original_tasks = TASKS.copy()
         TASKS.clear()
         TASKS[ExampleTask.id] = ExampleTask()
+        TASKS[GpuTask.id] = GpuTask()
         self.addCleanup(self.restore_tasks)
 
         self.temporary_directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary_directory.cleanup)
-        database_path = Path(self.temporary_directory.name) / "judge.db"
+        self.database_path = Path(self.temporary_directory.name) / "judge.db"
 
         self.environment = patch.dict(
             os.environ,
             {
                 "JUDGE_API_TOKEN": "secret",
-                "JUDGE_DATABASE_PATH": str(database_path),
+                "JUDGE_AGENT_TOKEN": "agent-secret",
+                "JUDGE_DATABASE_PATH": str(self.database_path),
             },
         )
         self.environment.start()
@@ -95,6 +109,233 @@ class SubmissionRouteTests(unittest.TestCase):
         response = self.client.get("/jobs/missing", headers=self.headers)
 
         self.assertEqual(response.status_code, 404)
+
+    def test_gpu_submission_requires_an_idempotency_key(self) -> None:
+        response = self.client.post(
+            "/submissions", headers=self.headers, json=self.submission("gpu-example")
+        )
+
+        self.assertEqual(response.status_code, 422)
+
+    def test_gpu_submission_fails_when_no_agent_is_connected(self) -> None:
+        self.register_gpu_agent()
+
+        response = self.client.post(
+            "/submissions",
+            headers=self.gpu_headers(),
+            json=self.submission("gpu-example"),
+        )
+
+        self.assertEqual(response.status_code, 503)
+        self.assertIsNone(
+            get_job_by_request_key(
+                self.database_path, self.submission()["repo_url"], "run-1"
+            )
+        )
+
+    def test_gpu_submission_succeeds_after_slurm_acknowledges_it(self) -> None:
+        self.register_gpu_agent()
+        with (
+            patch.object(
+                app.state.agent_channel, "available_ids", new_callable=AsyncMock
+            ) as available_ids,
+            patch.object(
+                app.state.agent_channel, "offer", new_callable=AsyncMock
+            ) as offer,
+        ):
+            available_ids.return_value = {"nano4"}
+            offer.return_value = JobReceipt(accepted=True, slurm_job_id="12345")
+
+            response = self.client.post(
+                "/submissions",
+                headers=self.gpu_headers(),
+                json=self.submission("gpu-example"),
+            )
+
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.json()["status"], "queued")
+        self.assertEqual(response.json()["assigned_judge_id"], "nano4")
+        self.assertEqual(response.json()["slurm_job_id"], "12345")
+        self.assertEqual(offer.call_args.args[1].job_id, response.json()["id"])
+
+        retry = self.client.post(
+            "/submissions",
+            headers=self.gpu_headers(),
+            json=self.submission("gpu-example"),
+        )
+        self.assertEqual(retry.status_code, 201)
+        self.assertEqual(retry.json()["id"], response.json()["id"])
+
+    def test_gpu_submission_exchanges_a_real_offer_and_receipt(self) -> None:
+        self.register_gpu_agent()
+
+        def accept_offer() -> str:
+            response = self.client.get(
+                "/agents/nano4/next",
+                headers={"Authorization": "Bearer agent-secret"},
+            )
+            self.assertEqual(response.status_code, 200)
+            job_id = response.json()["job_id"]
+            receipt = self.client.post(
+                f"/agents/nano4/jobs/{job_id}/receipt",
+                headers={"Authorization": "Bearer agent-secret"},
+                json={"accepted": True, "slurm_job_id": "12345"},
+            )
+            self.assertEqual(receipt.status_code, 204)
+            return job_id
+
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            agent = executor.submit(accept_offer)
+            assert self.client.portal is not None
+            deadline = time.monotonic() + 2
+            while "nano4" not in self.client.portal.call(
+                app.state.agent_channel.available_ids
+            ):
+                if time.monotonic() >= deadline:
+                    self.fail("Sub-judge did not begin polling")
+                time.sleep(0.01)
+
+            response = self.client.post(
+                "/submissions",
+                headers=self.gpu_headers(),
+                json=self.submission("gpu-example"),
+            )
+
+            self.assertEqual(response.status_code, 201)
+            self.assertEqual(agent.result(timeout=5), response.json()["id"])
+            self.assertEqual(response.json()["slurm_job_id"], "12345")
+
+    def test_gpu_submission_fails_if_agent_disconnects_during_dispatch(self) -> None:
+        self.register_gpu_agent()
+        with (
+            patch.object(
+                app.state.agent_channel, "available_ids", new_callable=AsyncMock
+            ) as available_ids,
+            patch.object(
+                app.state.agent_channel, "offer", new_callable=AsyncMock
+            ) as offer,
+        ):
+            available_ids.return_value = {"nano4"}
+            offer.side_effect = AgentUnavailable("not connected")
+
+            response = self.client.post(
+                "/submissions",
+                headers=self.gpu_headers(),
+                json=self.submission("gpu-example"),
+            )
+
+        self.assertEqual(response.status_code, 503)
+        job = get_job_by_request_key(
+            self.database_path, self.submission()["repo_url"], "run-1"
+        )
+        self.assertIsNotNone(job)
+        assert job is not None
+        self.assertEqual(job.status.value, "dispatching")
+
+    def test_gpu_submission_retries_a_dispatch_without_creating_another_job(
+        self,
+    ) -> None:
+        self.register_gpu_agent()
+        with (
+            patch.object(
+                app.state.agent_channel, "available_ids", new_callable=AsyncMock
+            ) as available_ids,
+            patch.object(
+                app.state.agent_channel, "offer", new_callable=AsyncMock
+            ) as offer,
+        ):
+            available_ids.return_value = {"nano4"}
+            offer.side_effect = [
+                AgentUnavailable("not connected"),
+                JobReceipt(accepted=True, slurm_job_id="12345"),
+            ]
+
+            first = self.client.post(
+                "/submissions",
+                headers=self.gpu_headers(),
+                json=self.submission("gpu-example"),
+            )
+            second = self.client.post(
+                "/submissions",
+                headers=self.gpu_headers(),
+                json=self.submission("gpu-example"),
+            )
+
+        self.assertEqual(first.status_code, 503)
+        self.assertEqual(second.status_code, 201)
+        self.assertEqual(offer.call_count, 2)
+        self.assertEqual(offer.call_args_list[0].args[1].job_id, second.json()["id"])
+        self.assertEqual(offer.call_args_list[1].args[1].job_id, second.json()["id"])
+
+    def test_gpu_submission_reports_slurm_rejection(self) -> None:
+        self.register_gpu_agent()
+        with (
+            patch.object(
+                app.state.agent_channel, "available_ids", new_callable=AsyncMock
+            ) as available_ids,
+            patch.object(
+                app.state.agent_channel, "offer", new_callable=AsyncMock
+            ) as offer,
+        ):
+            available_ids.return_value = {"nano4"}
+            offer.return_value = JobReceipt(accepted=False, error="quota exceeded")
+
+            response = self.client.post(
+                "/submissions",
+                headers=self.gpu_headers(),
+                json=self.submission("gpu-example"),
+            )
+
+        self.assertEqual(response.status_code, 503)
+        self.assertIn("quota exceeded", response.json()["detail"])
+        job = get_job_by_request_key(
+            self.database_path, self.submission()["repo_url"], "run-1"
+        )
+        self.assertIsNotNone(job)
+        assert job is not None
+        self.assertEqual(job.status.value, "error")
+
+    def test_rejects_reused_idempotency_key_with_a_different_commit(self) -> None:
+        self.register_gpu_agent()
+        with (
+            patch.object(
+                app.state.agent_channel, "available_ids", new_callable=AsyncMock
+            ) as available_ids,
+            patch.object(
+                app.state.agent_channel, "offer", new_callable=AsyncMock
+            ) as offer,
+        ):
+            available_ids.return_value = {"nano4"}
+            offer.return_value = JobReceipt(accepted=True, slurm_job_id="12345")
+            self.client.post(
+                "/submissions",
+                headers=self.gpu_headers(),
+                json=self.submission("gpu-example"),
+            )
+
+        changed = self.submission("gpu-example") | {"commit_sha": "b" * 40}
+        response = self.client.post(
+            "/submissions", headers=self.gpu_headers(), json=changed
+        )
+
+        self.assertEqual(response.status_code, 409)
+
+    def register_gpu_agent(self) -> None:
+        response = self.client.post(
+            "/agents/register",
+            headers={"Authorization": "Bearer agent-secret"},
+            json={
+                "id": "nano4",
+                "backend": "slurm",
+                "task_ids": ["gpu-example"],
+                "max_gpus": 8,
+                "judge_revision": "test-revision",
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+
+    def gpu_headers(self) -> dict[str, str]:
+        return self.headers | {"Idempotency-Key": "run-1"}
 
 
 class StartupTests(unittest.TestCase):

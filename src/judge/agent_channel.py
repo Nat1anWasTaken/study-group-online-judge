@@ -11,6 +11,10 @@ class AgentPollConflict(RuntimeError):
     pass
 
 
+class OfferAlreadyPending(RuntimeError):
+    pass
+
+
 class UnknownOffer(RuntimeError):
     pass
 
@@ -60,7 +64,9 @@ class AgentChannel:
                 raise AgentUnavailable(f"Sub-judge {judge_id!r} is not connected")
             if offer.job_id in self._receipts:
                 self._polls[judge_id] = poll
-                raise RuntimeError(f"Job {offer.job_id!r} already has a pending offer")
+                raise OfferAlreadyPending(
+                    f"Job {offer.job_id!r} already has a pending offer"
+                )
 
             receipt: asyncio.Future[JobReceipt] = (
                 asyncio.get_running_loop().create_future()
