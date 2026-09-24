@@ -26,6 +26,37 @@ as a Python module and calls the required function. For example, `lab1` loads
 `src/labs/lab1.py` and calls `gpt2_complete`; it checks the completions and
 logits against GPT-2 Small using 20 Tiny Shakespeare prompts.
 
+For `lab2`, implement `mmlu_eval()` in `src/labs/lab2.py` and include
+`src/labs/lab2.sbatch`. The function returns an A/B/C/D prediction for every
+test row in the `all` configuration of
+[`cais/mmlu`](https://huggingface.co/datasets/cais/mmlu), pinned to revision
+`c30699e8356da336a370243923dbaf21066bb9fe`. Use the first four `dev`
+rows of the same subject as exemplars and truncate prompts to the final 1024
+GPT-2 tokens. Score the next-token logits of the plain `A`, `B`, `C`, and `D`
+tokens after `Answer: `. The result key is the SHA-256 of this exact compact
+UTF-8 JSON encoding, where `index` is the zero-based row number in the pinned
+`all` test split:
+
+```python
+payload = {
+    "index": index,
+    "subject": row["subject"],
+    "question": row["question"],
+    "choices": row["choices"],
+}
+key = hashlib.sha256(
+    json.dumps(
+        payload, sort_keys=True, ensure_ascii=False, separators=(",", ":")
+    ).encode("utf-8")
+).hexdigest()
+```
+
+The row index is necessary because some MMLU questions, including some with
+identical subjects and choices, repeat. The H200 judge evaluates every test
+question against GPT-2 Small. It reports overall agreement and per-subject
+mismatch row numbers and hash prefixes to W&B, not one W&B row per question.
+Lab 2 passes when at least 97% of the predictions match and has no scoreboard.
+
 For a GPU task, also put an editable `src/labs/labX.sbatch` in your fork,
 replacing `X` with the task number. The Nano4 sub-judge submits that file to
 Slurm. Use [the template](src/labs/labX.sbatch) as a starting point. The judge
@@ -175,8 +206,8 @@ be changed after checking Nano4's actual H200 GRES name. The executor requests
 12 CPU cores and 200 GiB per requested GPU. The sample batch file loads
 `cuda/13.0`, then resolves dependencies on the compute node with
 `uv sync --no-sources --no-dev` to ignore the repository's Linux CPU-only
-PyTorch source while resolving dependencies. Confirm the resulting PyTorch CUDA
-build and `--gres` spelling on Nano4 before accepting real GPU submissions.
+PyTorch source while resolving dependencies. A Nano4 development run verified
+the generic `--gres=gpu:1` request, CUDA 13.0, and CUDA-enabled PyTorch on H200.
 
 The agent records accepted Slurm IDs and pending reports in
 `JUDGE_WORK_ROOT/agent.db`. It sends ordered, retryable events to the master;
@@ -184,6 +215,6 @@ the master stores them before W&B publication. If the agent crashes between
 invoking `sbatch` and recording its response, the outcome is ambiguous and a
 retry is rejected for manual reconciliation rather than risking two GPU jobs.
 There are no periodic agent health checks; a scheduling request fails if no
-agent is actively polling or if its offer is not acknowledged. This workflow
-has local tests, but has not been connected to Nano4 or validated against its
-live Slurm configuration.
+agent is actively polling or if its offer is not acknowledged. A temporary
+Nano4 development master and sub-judge completed a Lab 2 GPU submission; the
+production master-to-Nano4 deployment remains unvalidated.
