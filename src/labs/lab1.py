@@ -10,7 +10,7 @@ MODEL_ID = "openai-community/gpt2"
 def load_weights() -> dict[str, torch.Tensor]:
     weights = load_file(hf_hub_download(MODEL_ID, "model.safetensors"))
 
-    return weights
+    return {name: tensor.to(dtype=torch.float16) for name, tensor in weights.items()}
 
 
 def load_tokenizer() -> Tokenizer:
@@ -20,7 +20,7 @@ def load_tokenizer() -> Tokenizer:
 def load_first_layer_norm(
     weights: dict[str, torch.Tensor], layer_index: int
 ) -> nn.LayerNorm:
-    layer = nn.LayerNorm(768)
+    layer = nn.LayerNorm(768, dtype=torch.float16)
 
     with torch.no_grad():
         layer.weight.copy_(weights[f"h.{layer_index}.ln_1.weight"])
@@ -32,7 +32,7 @@ def load_first_layer_norm(
 def load_second_layer_norm(
     weights: dict[str, torch.Tensor], layer_index: int
 ) -> nn.LayerNorm:
-    layer = nn.LayerNorm(768)
+    layer = nn.LayerNorm(768, dtype=torch.float16)
 
     with torch.no_grad():
         layer.weight.copy_(weights[f"h.{layer_index}.ln_2.weight"])
@@ -42,7 +42,7 @@ def load_second_layer_norm(
 
 
 def load_final_layer_norm(weights: dict[str, torch.Tensor]) -> nn.LayerNorm:
-    layer = nn.LayerNorm(768)
+    layer = nn.LayerNorm(768, dtype=torch.float16)
 
     with torch.no_grad():
         layer.weight.copy_(weights["ln_f.weight"])
@@ -54,8 +54,8 @@ def load_final_layer_norm(weights: dict[str, torch.Tensor]) -> nn.LayerNorm:
 def load_embedding_layers(
     weights: dict[str, torch.Tensor],
 ) -> tuple[nn.Embedding, nn.Embedding]:
-    word_token_embedding = nn.Embedding(50257, 768)
-    word_position_embedding = nn.Embedding(1024, 768)
+    word_token_embedding = nn.Embedding(50257, 768, dtype=torch.float16)
+    word_position_embedding = nn.Embedding(1024, 768, dtype=torch.float16)
 
     with torch.no_grad():
         word_token_embedding.weight.copy_(weights["wte.weight"])
