@@ -233,7 +233,7 @@ class Lab2(Task):
             flush=True,
         )
         reference = _reference_predictions(rows, exemplars, indices)
-        by_subject: dict[str, list[tuple[str, str, str]]] = defaultdict(list)
+        by_subject: dict[str, list[tuple[int, str, str, str]]] = defaultdict(list)
         for index in tqdm(
             indices,
             desc="[lab2] validating sampled predictions",
@@ -242,19 +242,23 @@ class Lab2(Task):
         ):
             row = rows[index]
             key = question_key(index, row)
-            by_subject[row["subject"]].append((key, predictions[key], reference[key]))
+            by_subject[row["subject"]].append(
+                (index, key, predictions[key], reference[key])
+            )
 
         tests = []
         mismatches = 0
         for subject in sorted(by_subject):
             checked = by_subject[subject]
             differences = [
-                (key, got, want) for key, got, want in checked if got != want
+                (index, key, got, want)
+                for index, key, got, want in checked
+                if got != want
             ]
             mismatches += len(differences)
             examples = ", ".join(
-                f"{key[:12]}: got {got}, expected {want}"
-                for key, got, want in differences[:3]
+                f"row {index} ({key[:12]}): got {got}, expected {want}"
+                for index, key, got, want in differences[:3]
             )
             message = f"{len(checked) - len(differences)}/{len(checked)} matched" + (
                 f"; examples: {examples}" if examples else ""
