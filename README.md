@@ -52,11 +52,10 @@ key = hashlib.sha256(
 ```
 
 The row index is necessary because some MMLU questions, including some with
-identical subjects and choices, repeat. The judge checks a reproducible
-subject-stratified subset of eight questions per subject (456 total) against
-GPT-2 Small. It reports overall agreement and per-subject mismatch row numbers
-and hash prefixes to W&B, not one W&B row per question. Lab 2 has a pass/fail
-threshold of less than 3% disagreement and no scoreboard.
+identical subjects and choices, repeat. The H200 judge evaluates every test
+question against GPT-2 Small. It reports overall agreement and per-subject
+mismatch row numbers and hash prefixes to W&B, not one W&B row per question.
+Lab 2 passes when at least 97% of the predictions match and has no scoreboard.
 
 For a GPU task, also put an editable `src/labs/labX.sbatch` in your fork,
 replacing `X` with the task number. The Nano4 sub-judge submits that file to

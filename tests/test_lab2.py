@@ -11,7 +11,6 @@ from judge.tasks.lab2 import (
     Lab2,
     _load_student_function,
     _prompt,
-    _sample_indices,
     question_key,
 )
 
@@ -64,17 +63,6 @@ class Lab2Tests(unittest.TestCase):
             )
         )
 
-    def test_sample_is_seeded_and_subject_stratified(self) -> None:
-        rows = [row("a", str(i)) for i in range(20)] + [
-            row("b", str(i)) for i in range(20)
-        ]
-
-        first = _sample_indices(rows)
-
-        self.assertEqual(first, _sample_indices(rows))
-        self.assertEqual(len(first), 16)
-        self.assertEqual(sum(index < 20 for index in first), 8)
-
     def test_imports_participant_file(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory) / "src" / "labs" / "lab2.py"
@@ -96,32 +84,58 @@ class Lab2Tests(unittest.TestCase):
             patch(
                 "judge.tasks.lab2._load_student_function", return_value=lambda: answers
             ),
-            patch("judge.tasks.lab2._sample_indices", return_value=list(range(size))),
-            patch("judge.tasks.lab2._reference_predictions", return_value=expected),
+            patch(
+                "judge.tasks.lab2._reference_predictions", return_value=expected
+            ) as reference,
             patch("judge.tasks.lab2.torch.set_num_threads"),
             redirect_stdout(StringIO()) as output,
         ):
             result = Lab2().evaluate(Path("."))
+        reference.assert_called_once_with(rows, exemplars)
         return result, output.getvalue()
 
-    def test_passes_below_three_percent_and_reports_bounded_detail(self) -> None:
-        result, logs = self.evaluate_with(100, 2)
+    def test_passes_at_exactly_97_percent_and_reports_bounded_detail(self) -> None:
+        result, logs = self.evaluate_with(100, 3)
 
         self.assertTrue(result.passed)
         self.assertIsNone(result.score)
-        self.assertEqual(result.metrics["reference_agreement"], 0.98)
+        self.assertEqual(result.metrics["reference_agreement"], 0.97)
+        self.assertEqual(result.metrics["evaluated_questions"], 100)
         self.assertEqual(len(result.tests), 2)
         self.assertIn("row 0", result.tests[1].message or "")
         self.assertIn("verdict: PASS", logs)
         self.assertNotIn("Question 0?", logs)
 
-    def test_fails_at_exactly_three_percent_disagreement(self) -> None:
-        result, logs = self.evaluate_with(100, 3)
+    def test_fails_below_97_percent_agreement(self) -> None:
+        result, logs = self.evaluate_with(100, 4)
 
         self.assertFalse(result.passed)
         self.assertFalse(result.tests[0].passed)
-        self.assertEqual(result.metrics["mismatched_predictions"], 3)
+        self.assertEqual(result.metrics["mismatched_predictions"], 4)
+        self.assertNotIn("row 3", result.tests[1].message or "")
         self.assertIn("verdict: FAIL", logs)
+
+    def test_reports_one_result_per_subject_not_per_question(self) -> None:
+        rows = [row(f"subject_{index}", f"Question {index}?") for index in range(57)]
+        exemplars = {item["subject"]: [item] * 4 for item in rows}
+        predictions = {
+            question_key(index, item): "A" for index, item in enumerate(rows)
+        }
+        with (
+            patch("judge.tasks.lab2._load_data", return_value=(exemplars, rows)),
+            patch(
+                "judge.tasks.lab2._load_student_function",
+                return_value=lambda: predictions,
+            ),
+            patch("judge.tasks.lab2._reference_predictions", return_value=predictions),
+            patch("judge.tasks.lab2.torch.set_num_threads"),
+            redirect_stdout(StringIO()),
+        ):
+            result = Lab2().evaluate(Path("."))
+
+        self.assertTrue(result.passed)
+        self.assertEqual(len(result.tests), 58)
+        self.assertEqual(result.metrics["evaluated_questions"], 57)
 
     def test_rejects_missing_keys_before_reference_model_load(self) -> None:
         rows = [row("math", "one"), row("math", "two")]
