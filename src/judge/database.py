@@ -257,6 +257,17 @@ def get_job(path: Path, job_id: str) -> Job | None:
     return None if row is None else _job_from_row(row)
 
 
+def get_job_by_request_key(path: Path, repo_url: str, request_key: str) -> Job | None:
+    """Find a prior remote submission attempt for an idempotency key."""
+
+    with closing(_connect(path)) as connection:
+        row = connection.execute(
+            "SELECT * FROM jobs WHERE repo_url = ? AND request_key = ?",
+            (repo_url, request_key),
+        ).fetchone()
+    return None if row is None else _job_from_row(row)
+
+
 def claim_next_job(path: Path) -> Job | None:
     """Atomically move the oldest queued job into the running state."""
 
