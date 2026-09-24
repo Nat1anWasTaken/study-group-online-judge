@@ -1,5 +1,3 @@
-import math
-
 import torch
 from huggingface_hub import hf_hub_download
 from safetensors.torch import load_file
@@ -9,21 +7,10 @@ from torch import nn
 MODEL_ID = "openai-community/gpt2"
 
 
-def gelu(x: torch.Tensor) -> torch.Tensor:
-    return (
-        0.5
-        * x
-        * (
-            1.0
-            + torch.tanh(math.sqrt(2.0 / math.pi) * (x + 0.044715 * torch.pow(x, 3.0)))
-        )
-    )
-
-
 def load_weights() -> dict[str, torch.Tensor]:
     weights = load_file(hf_hub_download(MODEL_ID, "model.safetensors"))
 
-    return {name: tensor.half() for name, tensor in weights.items()}
+    return weights
 
 
 def load_tokenizer() -> Tokenizer:
@@ -123,7 +110,7 @@ def transformer_block(
     key = k.reshape(k.shape[0], 12, 64).transpose(0, 1)
     value = v.reshape(v.shape[0], 12, 64).transpose(0, 1)
 
-    attention_scores = torch.matmul(query.float(), key.float().transpose(-2, -1)) / 8
+    attention_scores = torch.matmul(query, key.transpose(-2, -1)) / 8
     token_count = attention_scores.shape[-1]
     causal_mask = torch.ones(
         token_count, token_count, dtype=torch.bool, device=attention_scores.device
@@ -131,7 +118,7 @@ def transformer_block(
     attention_weights = torch.softmax(
         attention_scores.masked_fill(~causal_mask, float("-inf")), dim=-1
     )
-    context = torch.matmul(attention_weights, value.float()).to(value.dtype)
+    context = torch.matmul(attention_weights, value)
     combined_context = context.transpose(0, 1).reshape(token_count, 768)
 
     projected_attention = (
@@ -142,7 +129,7 @@ def transformer_block(
 
     normalized_for_mlp = load_second_layer_norm(weights, layer_index)(after_attention)
     mlp_expanded = mlp_first_projection(normalized_for_mlp, weights, layer_index)
-    mlp_activated = gelu(mlp_expanded)
+    mlp_activated = torch.nn.functional.gelu(mlp_expanded, approximate="tanh")
     mlp_projected = mlp_second_projection(mlp_activated, weights, layer_index)
     return after_attention + mlp_projected
 
@@ -193,7 +180,6 @@ def gpt2_complete(
             - The decoded completion for each input string.
             - The model logits used during greedy generation.
     """
-    torch.set_default_dtype(torch.float16)
     if not 1 <= max_seq_length <= 1024:
         raise ValueError("max_seq_length must be between 1 and 1024")
 
