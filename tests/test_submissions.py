@@ -205,6 +205,49 @@ class SubmissionRouteTests(unittest.TestCase):
             self.assertEqual(agent.result(timeout=5), response.json()["id"])
             self.assertEqual(response.json()["slurm_job_id"], "12345")
 
+        job_id = response.json()["id"]
+        agent_headers = {"Authorization": "Bearer agent-secret"}
+        for sequence, payload in enumerate(
+            (
+                {"kind": "started"},
+                {"kind": "log", "line": "[lab] loading model\n"},
+                {"kind": "completed", "result": {"passed": True}},
+            ),
+            start=1,
+        ):
+            event = self.client.post(
+                f"/agents/nano4/jobs/{job_id}/events",
+                headers=agent_headers,
+                json={"sequence": sequence, "slurm_job_id": "12345", **payload},
+            )
+            self.assertEqual(event.status_code, 200)
+        finished = self.client.get(f"/jobs/{job_id}", headers=self.headers)
+        self.assertEqual(finished.json()["status"], "completed")
+        self.assertTrue(finished.json()["result"]["passed"])
+
+        duplicate = self.client.post(
+            f"/agents/nano4/jobs/{job_id}/events",
+            headers=agent_headers,
+            json={
+                "sequence": 3,
+                "slurm_job_id": "12345",
+                "kind": "completed",
+                "result": {"passed": True},
+            },
+        )
+        self.assertEqual(duplicate.status_code, 200)
+        wrong_agent = self.client.post(
+            f"/agents/other-agent/jobs/{job_id}/events",
+            headers=agent_headers,
+            json={
+                "sequence": 3,
+                "slurm_job_id": "12345",
+                "kind": "completed",
+                "result": {"passed": True},
+            },
+        )
+        self.assertEqual(wrong_agent.status_code, 409)
+
     def test_gpu_submission_fails_if_agent_disconnects_during_dispatch(self) -> None:
         self.register_gpu_agent()
         with (
