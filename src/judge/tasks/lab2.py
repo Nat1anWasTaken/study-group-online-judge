@@ -214,6 +214,7 @@ class Lab2(Task):
         )
         reference = _reference_predictions(rows, exemplars)
         by_subject: dict[str, list[tuple[int, str, str, str]]] = defaultdict(list)
+        correct_answers = 0
         for index, row in enumerate(
             tqdm(
                 rows,
@@ -223,6 +224,7 @@ class Lab2(Task):
             )
         ):
             key = question_key(index, row)
+            correct_answers += int(predictions[key] == LETTERS[row["answer"]])
             by_subject[row["subject"]].append(
                 (index, key, predictions[key], reference[key])
             )
@@ -256,23 +258,30 @@ class Lab2(Task):
 
         matched = len(rows) - mismatches
         agreement = matched / len(rows)
+        mmlu_accuracy = correct_answers / len(rows)
         passed = matched * 100 >= MIN_AGREEMENT_PERCENT * len(rows)
         summary = (
             f"{matched}/{len(rows)} matched "
             f"({agreement:.2%}); requires at least {MIN_AGREEMENT_PERCENT}% agreement"
         )
         print(f"[lab2] verdict: {'PASS' if passed else 'FAIL'}; {summary}", flush=True)
+        print(
+            f"[lab2] MMLU accuracy: {correct_answers}/{len(rows)} "
+            f"({mmlu_accuracy:.2%})",
+            flush=True,
+        )
         tests.insert(
             0,
             TestResult(name="overall_agreement", passed=passed, message=summary),
         )
         return JudgeResult(
             passed=passed,
+            score=agreement,
             metrics={
                 "evaluated_questions": float(len(rows)),
-                "matching_predictions": float(matched),
+                "samples_passed": float(matched),
                 "mismatched_predictions": float(mismatches),
-                "reference_agreement": agreement,
+                "mmlu_accuracy": mmlu_accuracy,
             },
             tests=tests,
         )

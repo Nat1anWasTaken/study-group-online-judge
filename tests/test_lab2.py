@@ -98,9 +98,12 @@ class Lab2Tests(unittest.TestCase):
         result, logs = self.evaluate_with(100, 3)
 
         self.assertTrue(result.passed)
-        self.assertIsNone(result.score)
-        self.assertEqual(result.metrics["reference_agreement"], 0.97)
+        self.assertEqual(result.score, 0.97)
+        self.assertEqual(result.metrics["samples_passed"], 97)
+        self.assertEqual(result.metrics["mmlu_accuracy"], 0.97)
         self.assertEqual(result.metrics["evaluated_questions"], 100)
+        self.assertNotIn("matching_predictions", result.metrics)
+        self.assertNotIn("reference_agreement", result.metrics)
         self.assertEqual(len(result.tests), 2)
         self.assertIn("row 0", result.tests[1].message or "")
         self.assertIn("verdict: PASS", logs)
@@ -114,6 +117,29 @@ class Lab2Tests(unittest.TestCase):
         self.assertEqual(result.metrics["mismatched_predictions"], 4)
         self.assertNotIn("row 3", result.tests[1].message or "")
         self.assertIn("verdict: FAIL", logs)
+
+    def test_mmlu_accuracy_uses_answer_labels_not_reference_agreement(self) -> None:
+        rows = [row("math", f"Question {index}?", index % 2) for index in range(4)]
+        predictions = {
+            question_key(index, question): "A" for index, question in enumerate(rows)
+        }
+        with (
+            patch("judge.tasks.lab2._load_data", return_value=({"math": rows}, rows)),
+            patch(
+                "judge.tasks.lab2._load_student_function",
+                return_value=lambda: predictions,
+            ),
+            patch("judge.tasks.lab2._reference_predictions", return_value=predictions),
+            patch("judge.tasks.lab2.torch.set_num_threads"),
+            redirect_stdout(StringIO()) as output,
+        ):
+            result = Lab2().evaluate(Path("."))
+
+        self.assertTrue(result.passed)
+        self.assertEqual(result.score, 1.0)
+        self.assertEqual(result.metrics["samples_passed"], 4)
+        self.assertEqual(result.metrics["mmlu_accuracy"], 0.5)
+        self.assertIn("MMLU accuracy: 2/4 (50.00%)", output.getvalue())
 
     def test_reports_one_result_per_subject_not_per_question(self) -> None:
         rows = [row(f"subject_{index}", f"Question {index}?") for index in range(57)]
