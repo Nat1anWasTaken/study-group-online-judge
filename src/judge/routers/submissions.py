@@ -88,7 +88,13 @@ async def submit(
             (
                 candidate
                 for candidate in database.list_sub_judges(database_path)
-                if _can_run(candidate, task.id, task.resources.gpus, available)
+                if _can_run(
+                    candidate,
+                    task.id,
+                    task.resources.gpus,
+                    available,
+                    request.app.state.judge_revision,
+                )
             ),
             None,
         )
@@ -147,12 +153,19 @@ async def submit(
     return database.mark_remote_job_queued(database_path, job.id, receipt.slurm_job_id)
 
 
-def _can_run(judge: SubJudge, task_id: str, gpus: int, available: set[str]) -> bool:
+def _can_run(
+    judge: SubJudge,
+    task_id: str,
+    gpus: int,
+    available: set[str],
+    expected_revision: str | None,
+) -> bool:
     return (
         judge.id in available
         and judge.backend == SubJudgeBackend.SLURM
         and task_id in judge.task_ids
         and judge.max_gpus >= gpus
+        and (expected_revision is None or judge.judge_revision == expected_revision)
     )
 
 

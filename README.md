@@ -92,7 +92,9 @@ registration, long-poll, receipt, and event routes use a separate
 `JUDGE_AGENT_TOKEN`. The master does not poll agents for health: it schedules
 only to an agent with an active long-poll and returns an error if the offer is
 not acknowledged. Keep the master API to one process because its pending
-long-polls are held in memory; the job and report records are in SQLite.
+long-polls are held in memory; the job and report records are in SQLite. The
+published master image embeds its source commit; a GPU agent must register
+with the same trusted judge checkout revision to receive work.
 
 ### Deployment
 
@@ -161,7 +163,7 @@ export JUDGE_AGENT_ID=nano4
 export JUDGE_AGENT_TOKEN='paste-the-master-agent-token-here'
 export JUDGE_TASK_IDS='lab2,lab3'
 export JUDGE_MAX_GPUS=8
-export JUDGE_REVISION='paste-the-trusted-judge-commit-sha-here'
+export JUDGE_REVISION="$(git -C "$JUDGE_TRUSTED_ROOT" rev-parse HEAD)"
 /work/$USER/study-group-oj-agent-venv/bin/python -m judge.slurm_agent
 ```
 

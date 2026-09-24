@@ -431,6 +431,9 @@ def main() -> None:
     ]
     if not task_ids:
         raise RuntimeError("JUDGE_TASK_IDS must list enabled GPU tasks")
+    revision = os.environ.get("JUDGE_REVISION")
+    if not revision:
+        raise RuntimeError("JUDGE_REVISION must identify the trusted judge checkout")
     work_root = Path(os.environ.get("JUDGE_WORK_ROOT", "/work/study-group-oj"))
     trusted_root = Path(os.environ.get("JUDGE_TRUSTED_ROOT", str(Path.cwd())))
     agent = SlurmAgent(
@@ -446,7 +449,7 @@ def main() -> None:
         work_root=work_root,
         task_ids=task_ids,
         max_gpus=int(os.environ.get("JUDGE_MAX_GPUS", "8")),
-        revision=os.environ.get("JUDGE_REVISION", "local"),
+        revision=revision,
     )
     if arguments.once:
         agent.client.register(agent.task_ids, agent.max_gpus, agent.revision)

@@ -20,6 +20,7 @@ async def lifespan(judge_app: FastAPI) -> AsyncIterator[None]:
     migrate_database(database_path)
     judge_app.state.api_token = api_token
     judge_app.state.agent_token = os.environ.get("JUDGE_AGENT_TOKEN") or None
+    judge_app.state.judge_revision = os.environ.get("JUDGE_REVISION") or None
     judge_app.state.agent_channel = AgentChannel()
     judge_app.state.database_path = database_path
     yield

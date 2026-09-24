@@ -24,6 +24,8 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 
 FROM base AS judge
 
+ARG JUDGE_REVISION=unknown
+
 COPY --from=docker:29.4.0-cli /usr/local/bin/docker /usr/local/bin/docker
 
 RUN apt-get update \
@@ -38,6 +40,7 @@ COPY --from=build --chown=judge:judge /app/.venv /app/.venv
 
 ENV PATH="/app/.venv/bin:${PATH}" \
     JUDGE_DATABASE_PATH=/data/judge.db \
+    JUDGE_REVISION=${JUDGE_REVISION} \
     HF_HOME=/home/judge/.cache/huggingface \
     UV_CACHE_DIR=/home/judge/.cache/uv \
     PYTHONUNBUFFERED=1
