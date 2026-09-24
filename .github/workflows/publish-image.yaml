@@ -30,6 +30,8 @@ jobs:
           target: judge
           platforms: linux/amd64
           push: true
+          build-args: |
+            JUDGE_REVISION=${{ github.sha }}
           tags: |
             ghcr.io/cerulean-works/study-group-online-judge:${{ github.sha }}
             ghcr.io/cerulean-works/study-group-online-judge:main
