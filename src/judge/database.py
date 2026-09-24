@@ -7,9 +7,16 @@ from importlib.resources import files
 from pathlib import Path
 from uuid import uuid4
 
-from judge.models import Job, JobStatus, JudgeResult, Submission
+from judge.models import (
+    Job,
+    JobStatus,
+    JudgeResult,
+    SubJudge,
+    SubJudgeBackend,
+    Submission,
+)
 
-MIGRATIONS = ("001_initial.sql",)
+MIGRATIONS = ("001_initial.sql", "002_sub_judges.sql")
 
 
 def migrate_database(path: Path) -> None:
@@ -88,6 +95,156 @@ def create_job(path: Path, submission: Submission) -> Job:
     return job
 
 
+def register_sub_judge(path: Path, sub_judge: SubJudge) -> SubJudge:
+    """Save a sub-judge's declared capabilities on registration."""
+
+    with closing(_connect(path)) as connection, connection:
+        connection.execute(
+            """
+            INSERT INTO sub_judges (
+                id, backend, task_ids_json, max_gpus, judge_revision, registered_at
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                backend = excluded.backend,
+                task_ids_json = excluded.task_ids_json,
+                max_gpus = excluded.max_gpus,
+                judge_revision = excluded.judge_revision,
+                registered_at = excluded.registered_at
+            """,
+            (
+                sub_judge.id,
+                sub_judge.backend.value,
+                json.dumps(sub_judge.task_ids),
+                sub_judge.max_gpus,
+                sub_judge.judge_revision,
+                sub_judge.registered_at.isoformat(),
+            ),
+        )
+    return sub_judge
+
+
+def get_sub_judge(path: Path, judge_id: str) -> SubJudge | None:
+    with closing(_connect(path)) as connection:
+        row = connection.execute(
+            "SELECT * FROM sub_judges WHERE id = ?", (judge_id,)
+        ).fetchone()
+    return None if row is None else _sub_judge_from_row(row)
+
+
+def list_sub_judges(path: Path) -> list[SubJudge]:
+    with closing(_connect(path)) as connection:
+        rows = connection.execute("SELECT * FROM sub_judges ORDER BY id").fetchall()
+    return [_sub_judge_from_row(row) for row in rows]
+
+
+def create_remote_job(
+    path: Path,
+    submission: Submission,
+    *,
+    judge_id: str,
+    request_key: str,
+) -> Job:
+    """Reserve a remote job, reusing its ID when the same request is retried."""
+
+    if not request_key:
+        raise ValueError("request_key must not be empty")
+
+    with closing(_connect(path)) as connection, connection:
+        connection.execute("BEGIN IMMEDIATE")
+        row = connection.execute(
+            "SELECT * FROM jobs WHERE repo_url = ? AND request_key = ?",
+            (submission.repo_url, request_key),
+        ).fetchone()
+        if row is not None:
+            existing = _job_from_row(row)
+            if existing.submission != submission:
+                raise ValueError("request_key was already used for another submission")
+            return existing
+
+        registered = connection.execute(
+            "SELECT 1 FROM sub_judges WHERE id = ?", (judge_id,)
+        ).fetchone()
+        if registered is None:
+            raise ValueError(f"Unknown sub-judge: {judge_id}")
+
+        job = Job(
+            id=uuid4().hex,
+            submission=submission,
+            status=JobStatus.DISPATCHING,
+            created_at=datetime.now(UTC),
+            assigned_judge_id=judge_id,
+        )
+        connection.execute(
+            """
+            INSERT INTO jobs (
+                id, repo_url, commit_sha, task_id, github_actor,
+                status, created_at, assigned_judge_id, request_key
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                job.id,
+                submission.repo_url,
+                submission.commit_sha,
+                submission.task_id,
+                submission.github_actor,
+                job.status.value,
+                job.created_at.isoformat(),
+                judge_id,
+                request_key,
+            ),
+        )
+    return job
+
+
+def mark_remote_job_queued(
+    path: Path, job_id: str, slurm_job_id: str | None = None
+) -> Job:
+    """Record a sub-judge's acceptance of an assigned job."""
+
+    if slurm_job_id == "":
+        raise ValueError("slurm_job_id must not be empty")
+
+    with closing(_connect(path)) as connection, connection:
+        cursor = connection.execute(
+            """
+            UPDATE jobs SET status = ?, slurm_job_id = ?
+            WHERE id = ? AND status = ? AND assigned_judge_id IS NOT NULL
+            """,
+            (
+                JobStatus.QUEUED.value,
+                slurm_job_id,
+                job_id,
+                JobStatus.DISPATCHING.value,
+            ),
+        )
+        if cursor.rowcount != 1:
+            row = connection.execute(
+                "SELECT * FROM jobs WHERE id = ?", (job_id,)
+            ).fetchone()
+            if (
+                row is None
+                or row["assigned_judge_id"] is None
+                or row["slurm_job_id"] != slurm_job_id
+                or row["status"]
+                not in {
+                    JobStatus.QUEUED.value,
+                    JobStatus.RUNNING.value,
+                    JobStatus.COMPLETED.value,
+                    JobStatus.ERROR.value,
+                }
+                or (
+                    row["status"] == JobStatus.ERROR.value
+                    and row["slurm_job_id"] is None
+                )
+            ):
+                raise RuntimeError(f"Job {job_id!r} cannot be marked queued")
+
+    job = get_job(path, job_id)
+    if job is None:
+        raise RuntimeError(f"Job {job_id!r} disappeared from the database")
+    return job
+
+
 def get_job(path: Path, job_id: str) -> Job | None:
     """Load a job by ID, or return ``None`` when it does not exist."""
 
@@ -109,7 +266,7 @@ def claim_next_job(path: Path) -> Job | None:
             row = connection.execute(
                 """
                 SELECT * FROM jobs
-                WHERE status = ?
+                WHERE status = ? AND assigned_judge_id IS NULL
                 ORDER BY created_at, id
                 LIMIT 1
                 """,
@@ -124,7 +281,7 @@ def claim_next_job(path: Path) -> Job | None:
                 """
                 UPDATE jobs
                 SET status = ?, started_at = ?
-                WHERE id = ? AND status = ?
+                WHERE id = ? AND status = ? AND assigned_judge_id IS NULL
                 """,
                 (
                     JobStatus.RUNNING.value,
@@ -198,6 +355,33 @@ def fail_job(path: Path, job_id: str, error: str) -> Job:
     )
 
 
+def fail_remote_dispatch(path: Path, job_id: str, error: str) -> Job:
+    """Record a definite failure before Slurm accepted a remote job."""
+
+    finished_at = datetime.now(UTC).isoformat()
+    with closing(_connect(path)) as connection, connection:
+        cursor = connection.execute(
+            """
+            UPDATE jobs SET status = ?, finished_at = ?, error = ?
+            WHERE id = ? AND status = ? AND assigned_judge_id IS NOT NULL
+            """,
+            (
+                JobStatus.ERROR.value,
+                finished_at,
+                error,
+                job_id,
+                JobStatus.DISPATCHING.value,
+            ),
+        )
+        if cursor.rowcount != 1:
+            raise RuntimeError(f"Job {job_id!r} is not dispatching")
+
+    job = get_job(path, job_id)
+    if job is None:
+        raise RuntimeError(f"Job {job_id!r} disappeared from the database")
+    return job
+
+
 def _finish_job(
     path: Path,
     job_id: str,
@@ -260,4 +444,17 @@ def _job_from_row(row: sqlite3.Row) -> Job:
         error=row["error"],
         wandb_run_id=row["wandb_run_id"],
         wandb_url=row["wandb_url"],
+        assigned_judge_id=row["assigned_judge_id"],
+        slurm_job_id=row["slurm_job_id"],
+    )
+
+
+def _sub_judge_from_row(row: sqlite3.Row) -> SubJudge:
+    return SubJudge(
+        id=row["id"],
+        backend=SubJudgeBackend(row["backend"]),
+        task_ids=json.loads(row["task_ids_json"]),
+        max_gpus=row["max_gpus"],
+        judge_revision=row["judge_revision"],
+        registered_at=row["registered_at"],
     )

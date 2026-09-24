@@ -8,6 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 class JobStatus(StrEnum):
     """Lifecycle state for a queued submission."""
 
+    DISPATCHING = "dispatching"
     QUEUED = "queued"
     RUNNING = "running"
     COMPLETED = "completed"
@@ -19,6 +20,11 @@ class MetricDirection(StrEnum):
 
     MINIMIZE = "minimize"
     MAXIMIZE = "maximize"
+
+
+class SubJudgeBackend(StrEnum):
+    DOCKER = "docker"
+    SLURM = "slurm"
 
 
 class Submission(BaseModel):
@@ -72,6 +78,17 @@ class Resources(BaseModel):
     timeout_seconds: int = Field(default=300, ge=1)
 
 
+class SubJudge(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str = Field(pattern=r"^[a-z][a-z0-9-]{0,62}$")
+    backend: SubJudgeBackend
+    task_ids: list[str] = Field(min_length=1)
+    max_gpus: int = Field(ge=0)
+    judge_revision: str = Field(min_length=1)
+    registered_at: datetime
+
+
 class Job(BaseModel):
     """A submission and its persistent judge state."""
 
@@ -87,3 +104,5 @@ class Job(BaseModel):
     error: str | None = None
     wandb_run_id: str | None = None
     wandb_url: str | None = None
+    assigned_judge_id: str | None = None
+    slurm_job_id: str | None = None
