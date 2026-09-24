@@ -1,8 +1,16 @@
 import unittest
+from datetime import UTC, datetime
 
 from pydantic import ValidationError
 
-from judge.models import JudgeResult, Resources, Submission, TestResult
+from judge.models import (
+    JudgeResult,
+    Resources,
+    SubJudge,
+    SubJudgeBackend,
+    Submission,
+    TestResult,
+)
 
 
 class SubmissionTests(unittest.TestCase):
@@ -76,6 +84,22 @@ class ResourcesTests(unittest.TestCase):
 
         with self.assertRaises(ValidationError):
             setattr(resources, field, 1)
+
+
+class SubJudgeTests(unittest.TestCase):
+    def test_rejects_invalid_identity_or_gpu_capacity(self) -> None:
+        valid = {
+            "id": "nano4",
+            "backend": SubJudgeBackend.SLURM,
+            "task_ids": ["gpu-lab"],
+            "max_gpus": 8,
+            "judge_revision": "test-revision",
+            "registered_at": datetime.now(UTC),
+        }
+
+        for invalid in ({"id": "../nano4"}, {"max_gpus": -1}, {"task_ids": []}):
+            with self.subTest(invalid=invalid), self.assertRaises(ValidationError):
+                SubJudge.model_validate(valid | invalid)
 
 
 if __name__ == "__main__":
