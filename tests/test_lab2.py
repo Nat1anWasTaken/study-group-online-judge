@@ -111,7 +111,7 @@ class Lab2Tests(unittest.TestCase):
         self.assertIsNone(result.score)
         self.assertEqual(result.metrics["reference_agreement"], 0.98)
         self.assertEqual(len(result.tests), 2)
-        self.assertIn("2", result.tests[1].message)
+        self.assertIn("row 0", result.tests[1].message or "")
         self.assertIn("verdict: PASS", logs)
         self.assertNotIn("Question 0?", logs)
 

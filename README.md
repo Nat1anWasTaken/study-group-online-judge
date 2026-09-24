@@ -53,9 +53,10 @@ key = hashlib.sha256(
 
 The row index is necessary because some MMLU questions, including some with
 identical subjects and choices, repeat. The judge checks a reproducible
-subject-stratified subset against GPT-2 Small. It reports overall agreement
-and per-subject mismatch examples to W&B, not one W&B row per question. Lab 2
-has a pass/fail threshold of less than 3% disagreement and no scoreboard.
+subject-stratified subset of eight questions per subject (456 total) against
+GPT-2 Small. It reports overall agreement and per-subject mismatch row numbers
+and hash prefixes to W&B, not one W&B row per question. Lab 2 has a pass/fail
+threshold of less than 3% disagreement and no scoreboard.
 
 For a GPU task, also put an editable `src/labs/labX.sbatch` in your fork,
 replacing `X` with the task number. The Nano4 sub-judge submits that file to
@@ -206,8 +207,8 @@ be changed after checking Nano4's actual H200 GRES name. The executor requests
 12 CPU cores and 200 GiB per requested GPU. The sample batch file loads
 `cuda/13.0`, then resolves dependencies on the compute node with
 `uv sync --no-sources --no-dev` to ignore the repository's Linux CPU-only
-PyTorch source while resolving dependencies. Confirm the resulting PyTorch CUDA
-build and `--gres` spelling on Nano4 before accepting real GPU submissions.
+PyTorch source while resolving dependencies. A Nano4 development run verified
+the generic `--gres=gpu:1` request, CUDA 13.0, and CUDA-enabled PyTorch on H200.
 
 The agent records accepted Slurm IDs and pending reports in
 `JUDGE_WORK_ROOT/agent.db`. It sends ordered, retryable events to the master;
@@ -215,6 +216,6 @@ the master stores them before W&B publication. If the agent crashes between
 invoking `sbatch` and recording its response, the outcome is ambiguous and a
 retry is rejected for manual reconciliation rather than risking two GPU jobs.
 There are no periodic agent health checks; a scheduling request fails if no
-agent is actively polling or if its offer is not acknowledged. This workflow
-has local tests, but has not been connected to Nano4 or validated against its
-live Slurm configuration.
+agent is actively polling or if its offer is not acknowledged. A temporary
+Nano4 development master and sub-judge completed a Lab 2 GPU submission; the
+production master-to-Nano4 deployment remains unvalidated.
