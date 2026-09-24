@@ -8,6 +8,7 @@ services:
     restart: unless-stopped
     environment:
       JUDGE_API_TOKEN: ${JUDGE_API_TOKEN:?JUDGE_API_TOKEN must be set}
+      JUDGE_AGENT_TOKEN: ${JUDGE_AGENT_TOKEN:-}
     volumes:
       - judge-data:/data
       - hf-cache:/home/judge/.cache/huggingface
@@ -53,6 +54,21 @@ services:
       - type: bind
         source: /var/run/docker.sock
         target: /var/run/docker.sock
+
+  remote-reporter:
+    image: ghcr.io/cerulean-works/study-group-online-judge:main
+    pull_policy: always
+    init: true
+    restart: unless-stopped
+    command: ["python", "-m", "judge.remote_reporter"]
+    environment:
+      WANDB_API_KEY: ${WANDB_API_KEY:?WANDB_API_KEY must be set}
+      WANDB_DIR: /data/wandb
+      WANDB_ENTITY: ${WANDB_ENTITY:-}
+      WANDB_MODE: ${WANDB_MODE:-online}
+      WANDB_PROJECT: ${WANDB_PROJECT:?WANDB_PROJECT must be set}
+    volumes:
+      - judge-data:/data
 
 volumes:
   judge-data:
