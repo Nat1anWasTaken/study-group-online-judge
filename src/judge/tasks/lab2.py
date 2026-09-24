@@ -1,9 +1,8 @@
-"""Reproducible, subject-stratified MMLU check for Lab 2."""
+"""Full MMLU reference comparison for Lab 2."""
 
 import hashlib
 import importlib.util
 import json
-import random
 import sys
 import traceback
 from collections import defaultdict
@@ -23,10 +22,8 @@ DATASET_REVISION = "c30699e8356da336a370243923dbaf21066bb9fe"
 MODEL_ID = "openai-community/gpt2"
 LETTERS = "ABCD"
 EXEMPLARS_PER_SUBJECT = 4
-SAMPLES_PER_SUBJECT = 8
-SAMPLE_SEED = 20260925
-MAX_MISMATCH_RATE = 0.03
-REFERENCE_BATCH_SIZE = 8
+MIN_AGREEMENT_PERCENT = 97
+REFERENCE_BATCH_SIZE = 16
 
 
 def question_key(index: int, row: dict[str, Any]) -> str:
@@ -86,24 +83,9 @@ def _prompt(row: dict[str, Any], exemplars: list[dict[str, Any]]) -> str:
     )
 
 
-def _sample_indices(rows: list[dict[str, Any]]) -> list[int]:
-    by_subject: dict[str, list[int]] = defaultdict(list)
-    for index, row in enumerate(rows):
-        by_subject[row["subject"]].append(index)
-    rng = random.Random(SAMPLE_SEED)
-    return sorted(
-        index
-        for subject in sorted(by_subject)
-        for index in rng.sample(
-            by_subject[subject], min(SAMPLES_PER_SUBJECT, len(by_subject[subject]))
-        )
-    )
-
-
 def _reference_predictions(
     rows: list[dict[str, Any]],
     exemplars: dict[str, list[dict[str, Any]]],
-    indices: list[int],
 ) -> dict[str, str]:
     if not torch.cuda.is_available():
         raise RuntimeError("Lab 2 requires an available CUDA GPU")
@@ -123,18 +105,18 @@ def _reference_predictions(
     model.eval()
     context_length = model.config.n_positions
     print(
-        f"[lab2] reference model ready; checking {len(indices)} sampled questions",
+        f"[lab2] reference model ready; evaluating all {len(rows)} test questions",
         flush=True,
     )
     predictions: dict[str, str] = {}
     with torch.inference_mode():
         for start in tqdm(
-            range(0, len(indices), REFERENCE_BATCH_SIZE),
+            range(0, len(rows), REFERENCE_BATCH_SIZE),
             desc="[lab2] reference inference",
             file=sys.stdout,
             mininterval=5,
         ):
-            batch = indices[start : start + REFERENCE_BATCH_SIZE]
+            batch = range(start, min(start + REFERENCE_BATCH_SIZE, len(rows)))
             prompts = [
                 _prompt(rows[index], exemplars[rows[index]["subject"]])
                 for index in batch
@@ -226,21 +208,20 @@ class Lab2(Task):
                 f"invalid={len(invalid)} (e.g. {sorted(invalid)[:2]})",
             )
 
-        indices = _sample_indices(rows)
         print(
-            f"[lab2] comparing a seeded, subject-stratified subset of {len(indices)} "
-            f"questions (seed={SAMPLE_SEED})",
+            f"[lab2] comparing all {len(rows)} participant predictions with GPT-2",
             flush=True,
         )
-        reference = _reference_predictions(rows, exemplars, indices)
+        reference = _reference_predictions(rows, exemplars)
         by_subject: dict[str, list[tuple[int, str, str, str]]] = defaultdict(list)
-        for index in tqdm(
-            indices,
-            desc="[lab2] validating sampled predictions",
-            file=sys.stdout,
-            mininterval=5,
+        for index, row in enumerate(
+            tqdm(
+                rows,
+                desc="[lab2] validating predictions",
+                file=sys.stdout,
+                mininterval=5,
+            )
         ):
-            row = rows[index]
             key = question_key(index, row)
             by_subject[row["subject"]].append(
                 (index, key, predictions[key], reference[key])
@@ -260,23 +241,25 @@ class Lab2(Task):
                 f"row {index} ({key[:12]}): got {got}, expected {want}"
                 for index, key, got, want in differences[:3]
             )
-            message = f"{len(checked) - len(differences)}/{len(checked)} matched" + (
+            matched = len(checked) - len(differences)
+            message = f"{matched}/{len(checked)} matched" + (
                 f"; examples: {examples}" if examples else ""
             )
             print(f"[lab2] {subject}: {message}", flush=True)
             tests.append(
                 TestResult(
                     name=subject,
-                    passed=not differences,
+                    passed=matched * 100 >= MIN_AGREEMENT_PERCENT * len(checked),
                     message=message,
                 )
             )
 
-        agreement = 1 - mismatches / len(indices)
-        passed = mismatches / len(indices) < MAX_MISMATCH_RATE
+        matched = len(rows) - mismatches
+        agreement = matched / len(rows)
+        passed = matched * 100 >= MIN_AGREEMENT_PERCENT * len(rows)
         summary = (
-            f"{len(indices) - mismatches}/{len(indices)} matched "
-            f"({agreement:.2%}); requires mismatch rate < {MAX_MISMATCH_RATE:.0%}"
+            f"{matched}/{len(rows)} matched "
+            f"({agreement:.2%}); requires at least {MIN_AGREEMENT_PERCENT}% agreement"
         )
         print(f"[lab2] verdict: {'PASS' if passed else 'FAIL'}; {summary}", flush=True)
         tests.insert(
@@ -286,8 +269,8 @@ class Lab2(Task):
         return JudgeResult(
             passed=passed,
             metrics={
-                "sampled_questions": float(len(indices)),
-                "matching_predictions": float(len(indices) - mismatches),
+                "evaluated_questions": float(len(rows)),
+                "matching_predictions": float(matched),
                 "mismatched_predictions": float(mismatches),
                 "reference_agreement": agreement,
             },
