@@ -10,7 +10,7 @@ MODEL_ID = "openai-community/gpt2"
 def load_weights() -> dict[str, torch.Tensor]:
     weights = load_file(hf_hub_download(MODEL_ID, "model.safetensors"))
 
-    return weights
+    return {name: tensor.half() for name, tensor in weights.items()}
 
 
 def load_tokenizer() -> Tokenizer:
@@ -180,6 +180,7 @@ def gpt2_complete(
             - The decoded completion for each input string.
             - The model logits used during greedy generation.
     """
+    torch.set_default_dtype(torch.float16)
     if not 1 <= max_seq_length <= 1024:
         raise ValueError("max_seq_length must be between 1 and 1024")
 
