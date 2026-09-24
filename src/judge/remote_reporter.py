@@ -54,7 +54,6 @@ def publish_event(
         elif event.kind == RemoteEventKind.LOG:
             assert event.line is not None
             print(event.line, end="" if event.line.endswith("\n") else "\n", flush=True)
-            run.log({"judge/log_line": event.line})
         elif event.kind == RemoteEventKind.COMPLETED:
             assert event.result is not None
             with tempfile.TemporaryDirectory(prefix="judge-result-") as directory:
