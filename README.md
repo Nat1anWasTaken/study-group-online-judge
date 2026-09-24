@@ -26,6 +26,37 @@ as a Python module and calls the required function. For example, `lab1` loads
 `src/labs/lab1.py` and calls `gpt2_complete`; it checks the completions and
 logits against GPT-2 Small using 20 Tiny Shakespeare prompts.
 
+For `lab2`, implement `mmlu_eval()` in `src/labs/lab2.py` and include
+`src/labs/lab2.sbatch`. The function returns an A/B/C/D prediction for every
+test row in the `all` configuration of
+[`cais/mmlu`](https://huggingface.co/datasets/cais/mmlu), pinned to revision
+`c30699e8356da336a370243923dbaf21066bb9fe`. Use the first four `dev`
+rows of the same subject as exemplars and truncate prompts to the final 1024
+GPT-2 tokens. Score the next-token logits of the plain `A`, `B`, `C`, and `D`
+tokens after `Answer: `. The result key is the SHA-256 of this exact compact
+UTF-8 JSON encoding, where `index` is the zero-based row number in the pinned
+`all` test split:
+
+```python
+payload = {
+    "index": index,
+    "subject": row["subject"],
+    "question": row["question"],
+    "choices": row["choices"],
+}
+key = hashlib.sha256(
+    json.dumps(
+        payload, sort_keys=True, ensure_ascii=False, separators=(",", ":")
+    ).encode("utf-8")
+).hexdigest()
+```
+
+The row index is necessary because some MMLU questions, including some with
+identical subjects and choices, repeat. The judge checks a reproducible
+subject-stratified subset against GPT-2 Small. It reports overall agreement
+and per-subject mismatch examples to W&B, not one W&B row per question. Lab 2
+has a pass/fail threshold of less than 3% disagreement and no scoreboard.
+
 For a GPU task, also put an editable `src/labs/labX.sbatch` in your fork,
 replacing `X` with the task number. The Nano4 sub-judge submits that file to
 Slurm. Use [the template](src/labs/labX.sbatch) as a starting point. The judge

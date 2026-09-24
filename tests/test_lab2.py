@@ -1,0 +1,161 @@
+import hashlib
+import json
+import tempfile
+import unittest
+from contextlib import redirect_stdout
+from io import StringIO
+from pathlib import Path
+from unittest.mock import patch
+
+from judge.tasks.lab2 import (
+    Lab2,
+    _load_student_function,
+    _prompt,
+    _sample_indices,
+    question_key,
+)
+
+
+def row(subject: str, question: str, answer: int = 0) -> dict:
+    return {
+        "subject": subject,
+        "question": question,
+        "choices": ["first", "second", "third", "fourth"],
+        "answer": answer,
+    }
+
+
+class Lab2Tests(unittest.TestCase):
+    def test_key_disambiguates_exact_duplicate_rows(self) -> None:
+        question = row("high_school_mathematics", "What is x?")
+        payload = {
+            "index": 0,
+            "subject": question["subject"],
+            "question": question["question"],
+            "choices": question["choices"],
+        }
+        expected = hashlib.sha256(
+            json.dumps(
+                payload, sort_keys=True, ensure_ascii=False, separators=(",", ":")
+            ).encode("utf-8")
+        ).hexdigest()
+
+        self.assertEqual(question_key(0, question), expected)
+        self.assertNotEqual(question_key(0, question), question_key(1, question))
+
+    def test_prompt_has_four_subject_exemplars_and_blank_answer(self) -> None:
+        exemplars = [
+            row("high_school_mathematics", f"Example {i}?", i) for i in range(4)
+        ]
+
+        prompt = _prompt(row("high_school_mathematics", "Test?"), exemplars)
+
+        self.assertTrue(
+            prompt.startswith(
+                "The following are multiple choice questions about high school mathematics.\n\n"
+            )
+        )
+        self.assertIn(
+            "Example 3?\n(A) first (B) second (C) third (D) fourth\nAnswer: D", prompt
+        )
+        self.assertTrue(
+            prompt.endswith(
+                "Test?\n(A) first (B) second (C) third (D) fourth\nAnswer: "
+            )
+        )
+
+    def test_sample_is_seeded_and_subject_stratified(self) -> None:
+        rows = [row("a", str(i)) for i in range(20)] + [
+            row("b", str(i)) for i in range(20)
+        ]
+
+        first = _sample_indices(rows)
+
+        self.assertEqual(first, _sample_indices(rows))
+        self.assertEqual(len(first), 16)
+        self.assertEqual(sum(index < 20 for index in first), 8)
+
+    def test_imports_participant_file(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "src" / "labs" / "lab2.py"
+            source.parent.mkdir(parents=True)
+            source.write_text("def mmlu_eval():\n    return {'hash': 'A'}\n")
+
+            self.assertEqual(_load_student_function(Path(directory))(), {"hash": "A"})
+
+    def evaluate_with(self, size: int, wrong: int):
+        rows = [row("high_school_mathematics", f"Question {i}?") for i in range(size)]
+        exemplars = {"high_school_mathematics": rows[:4]}
+        answers = {
+            question_key(i, question): "B" if i < wrong else "A"
+            for i, question in enumerate(rows)
+        }
+        expected = {question_key(i, question): "A" for i, question in enumerate(rows)}
+        with (
+            patch("judge.tasks.lab2._load_data", return_value=(exemplars, rows)),
+            patch(
+                "judge.tasks.lab2._load_student_function", return_value=lambda: answers
+            ),
+            patch("judge.tasks.lab2._sample_indices", return_value=list(range(size))),
+            patch("judge.tasks.lab2._reference_predictions", return_value=expected),
+            patch("judge.tasks.lab2.torch.set_num_threads"),
+            redirect_stdout(StringIO()) as output,
+        ):
+            result = Lab2().evaluate(Path("."))
+        return result, output.getvalue()
+
+    def test_passes_below_three_percent_and_reports_bounded_detail(self) -> None:
+        result, logs = self.evaluate_with(100, 2)
+
+        self.assertTrue(result.passed)
+        self.assertIsNone(result.score)
+        self.assertEqual(result.metrics["reference_agreement"], 0.98)
+        self.assertEqual(len(result.tests), 2)
+        self.assertIn("2", result.tests[1].message)
+        self.assertIn("verdict: PASS", logs)
+        self.assertNotIn("Question 0?", logs)
+
+    def test_fails_at_exactly_three_percent_disagreement(self) -> None:
+        result, logs = self.evaluate_with(100, 3)
+
+        self.assertFalse(result.passed)
+        self.assertFalse(result.tests[0].passed)
+        self.assertEqual(result.metrics["mismatched_predictions"], 3)
+        self.assertIn("verdict: FAIL", logs)
+
+    def test_rejects_missing_keys_before_reference_model_load(self) -> None:
+        rows = [row("math", "one"), row("math", "two")]
+        with (
+            patch("judge.tasks.lab2._load_data", return_value=({"math": rows}, rows)),
+            patch("judge.tasks.lab2._load_student_function", return_value=dict),
+            patch("judge.tasks.lab2._reference_predictions") as reference,
+            patch("judge.tasks.lab2.torch.set_num_threads"),
+            redirect_stdout(StringIO()),
+        ):
+            result = Lab2().evaluate(Path("."))
+
+        self.assertFalse(result.passed)
+        self.assertEqual(result.tests[0].name, "return_contract")
+        self.assertIn("missing=2", result.tests[0].message or "")
+        reference.assert_not_called()
+
+    def test_logs_student_error_and_traceback(self) -> None:
+        rows = [row("math", "one")]
+        with (
+            patch("judge.tasks.lab2._load_data", return_value=({"math": rows}, rows)),
+            patch(
+                "judge.tasks.lab2._load_student_function",
+                side_effect=ValueError("broken"),
+            ),
+            patch("judge.tasks.lab2.torch.set_num_threads"),
+            redirect_stdout(StringIO()) as output,
+        ):
+            result = Lab2().evaluate(Path("."))
+
+        self.assertFalse(result.passed)
+        self.assertEqual(result.tests[0].message, "ValueError: broken")
+        self.assertIn("Traceback", output.getvalue())
+
+
+if __name__ == "__main__":
+    unittest.main()
