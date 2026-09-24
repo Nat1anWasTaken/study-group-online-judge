@@ -123,7 +123,7 @@ def transformer_block(
     key = k.reshape(k.shape[0], 12, 64).transpose(0, 1)
     value = v.reshape(v.shape[0], 12, 64).transpose(0, 1)
 
-    attention_scores = torch.matmul(query, key.transpose(-2, -1)) / 8
+    attention_scores = torch.matmul(query.float(), key.float().transpose(-2, -1)) / 8
     token_count = attention_scores.shape[-1]
     causal_mask = torch.ones(
         token_count, token_count, dtype=torch.bool, device=attention_scores.device
@@ -131,7 +131,7 @@ def transformer_block(
     attention_weights = torch.softmax(
         attention_scores.masked_fill(~causal_mask, float("-inf")), dim=-1
     )
-    context = torch.matmul(attention_weights, value)
+    context = torch.matmul(attention_weights, value.float()).to(value.dtype)
     combined_context = context.transpose(0, 1).reshape(token_count, 768)
 
     projected_attention = (
