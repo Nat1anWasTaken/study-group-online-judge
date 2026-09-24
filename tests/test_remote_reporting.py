@@ -22,7 +22,7 @@ from judge.models import (
     SubJudgeBackend,
     Submission,
 )
-from judge.remote_reporter import run_reporter
+from judge.remote_reporter import publish_event, run_reporter
 
 
 class RemoteReportingTests(unittest.TestCase):
@@ -160,6 +160,27 @@ class RemoteReportingTests(unittest.TestCase):
             )
         publish.assert_called_once()
         self.assertIsNone(next_unreported_event(self.path))
+
+    def test_log_event_prints_without_creating_a_wandb_property(self) -> None:
+        run = Mock()
+        run.id = self.job.id
+        run.url = "https://wandb.ai/example/run"
+        with (
+            patch("judge.remote_reporter.wandb.init", return_value=run),
+            patch("judge.remote_reporter.set_wandb_run"),
+            patch("builtins.print") as output,
+        ):
+            publish_event(
+                self.job,
+                self.event(1, RemoteEventKind.LOG, line="training\n"),
+                database_path=self.path,
+                wandb_project="study-group",
+                wandb_entity=None,
+            )
+
+        output.assert_called_once_with("training\n", end="", flush=True)
+        run.log.assert_not_called()
+        run.finish.assert_called_once()
 
 
 if __name__ == "__main__":
