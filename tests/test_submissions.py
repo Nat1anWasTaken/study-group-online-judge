@@ -133,6 +133,20 @@ class SubmissionRouteTests(unittest.TestCase):
             )
         )
 
+    def test_gpu_submission_skips_agents_with_a_different_judge_revision(self) -> None:
+        self.register_gpu_agent()
+        app.state.judge_revision = "new-master-commit"
+        with patch.object(
+            app.state.agent_channel, "available_ids", new_callable=AsyncMock
+        ) as available_ids:
+            available_ids.return_value = {"nano4"}
+            response = self.client.post(
+                "/submissions",
+                headers=self.gpu_headers(),
+                json=self.submission("gpu-example"),
+            )
+        self.assertEqual(response.status_code, 503)
+
     def test_gpu_submission_succeeds_after_slurm_acknowledges_it(self) -> None:
         self.register_gpu_agent()
         with (
