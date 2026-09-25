@@ -8,7 +8,8 @@ from torch import nn
 
 MODEL_ID = "openai-community/gpt2"
 
-def gelu(mlp_expanded: float):
+
+def gelu(mlp_expanded: torch.Tensor):
     return (
         0.5
         * mlp_expanded
@@ -24,40 +25,21 @@ def gelu(mlp_expanded: float):
 
 def load_weights() -> dict[str, torch.Tensor]:
     weights = load_file(hf_hub_download(MODEL_ID, "model.safetensors"))
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    return {name: tensor.to(dtype=torch.float16) for name, tensor in weights.items()}
+    return {
+        name: tensor.to(device=device, dtype=torch.float16)
+        for name, tensor in weights.items()
+    }
 
 
 def load_tokenizer() -> Tokenizer:
     return Tokenizer.from_file(hf_hub_download(MODEL_ID, "tokenizer.json"))
 
 
-def load_first_layer_norm(
-    weights: dict[str, torch.Tensor], layer_index: int
-) -> nn.LayerNorm:
-    layer = nn.LayerNorm(768, dtype=torch.float16)
-
-    with torch.no_grad():
-        layer.weight.copy_(weights[f"h.{layer_index}.ln_1.weight"])
-        layer.bias.copy_(weights[f"h.{layer_index}.ln_1.bias"])
-
-    return layer
-
-
-def load_second_layer_norm(
-    weights: dict[str, torch.Tensor], layer_index: int
-) -> nn.LayerNorm:
-    layer = nn.LayerNorm(768, dtype=torch.float16)
-
-    with torch.no_grad():
-        layer.weight.copy_(weights[f"h.{layer_index}.ln_2.weight"])
-        layer.bias.copy_(weights[f"h.{layer_index}.ln_2.bias"])
-
-    return layer
-
-
 def load_final_layer_norm(weights: dict[str, torch.Tensor]) -> nn.LayerNorm:
-    layer = nn.LayerNorm(768, dtype=torch.float16)
+    weight = weights["ln_f.weight"]
+    layer = nn.LayerNorm(768, device=weight.device, dtype=weight.dtype)
 
     with torch.no_grad():
         layer.weight.copy_(weights["ln_f.weight"])
@@ -69,8 +51,18 @@ def load_final_layer_norm(weights: dict[str, torch.Tensor]) -> nn.LayerNorm:
 def load_embedding_layers(
     weights: dict[str, torch.Tensor],
 ) -> tuple[nn.Embedding, nn.Embedding]:
-    word_token_embedding = nn.Embedding(50257, 768, dtype=torch.float16)
-    word_position_embedding = nn.Embedding(1024, 768, dtype=torch.float16)
+    word_token_embedding = nn.Embedding(
+        50257,
+        768,
+        device=weights["wte.weight"].device,
+        dtype=weights["wte.weight"].dtype,
+    )
+    word_position_embedding = nn.Embedding(
+        1024,
+        768,
+        device=weights["wpe.weight"].device,
+        dtype=weights["wpe.weight"].dtype,
+    )
 
     with torch.no_grad():
         word_token_embedding.weight.copy_(weights["wte.weight"])
@@ -128,7 +120,9 @@ def transformer_block(
     layer_index: int,
 ) -> torch.Tensor:
     prefix = f"h.{layer_index}"
-    normalized = load_first_layer_norm(weights, layer_index)(hidden)
+    normalized = torch.nn.functional.layer_norm(
+        hidden, (768,), weights[f"{prefix}.ln_1.weight"], weights[f"{prefix}.ln_1.bias"]
+    )
 
     qkv = linear_projection(
         normalized,
@@ -158,7 +152,12 @@ def transformer_block(
     )
     after_attention = hidden + projected_attention
 
-    normalized_for_mlp = load_second_layer_norm(weights, layer_index)(after_attention)
+    normalized_for_mlp = torch.nn.functional.layer_norm(
+        after_attention,
+        (768,),
+        weights[f"{prefix}.ln_2.weight"],
+        weights[f"{prefix}.ln_2.bias"],
+    )
     mlp_expanded = mlp_first_projection(normalized_for_mlp, weights, layer_index)
 
     mlp_activated = gelu(mlp_expanded)
