@@ -235,3 +235,9 @@ After the initial baseline, automatic messages are sent only for a strictly bett
 all-time score (respecting minimize/maximize), or a new earliest passing submission.
 Ties and changes below first place stay quiet. Persisted records survive restarts
 and are not lowered when a run disappears. Failed Slack deliveries retry.
+
+The API container also needs `WANDB_API_KEY`: workers publish submissions, while
+`api` independently reads W&B for the leaderboard. Compose's `.env` supplies
+interpolation values; it does not automatically inject every variable into every
+container. After updating `compose.yaml` or `.env`, recreate the API with
+`docker compose up -d --force-recreate api` so it receives the new environment.
