@@ -5,26 +5,58 @@ import math
 import os
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import NotRequired, TypedDict
 from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
 
 from judge.tasks import TASKS
 
 
-def timestamp(value):
+class SubmissionEntry(TypedDict):
+    github_actor: str
+    score: float | None
+    submitted_at: str
+    run_url: str | None
+    submission_id: str
+
+
+class RankedEntry(SubmissionEntry):
+    rank: int
+    attempts: int
+
+
+class Leaderboard(TypedDict):
+    id: str
+    grading_type: str
+    primary_metric: str | None
+    metric_direction: str | None
+    entries: list[RankedEntry]
+    submissions: int
+    participants: int
+
+
+class LeaderboardSnapshot(TypedDict):
+    source: str
+    updated_at: str | None
+    error: str | None
+    labs: list[Leaderboard]
+    notification_error: NotRequired[str]
+
+
+def timestamp(value: object) -> datetime:
     parsed = datetime.fromisoformat(str(value))
     return (
         parsed.replace(tzinfo=UTC) if parsed.tzinfo is None else parsed.astimezone(UTC)
     )
 
 
-def rank_submissions(submissions):
-    boards = []
+def rank_submissions(submissions) -> list[Leaderboard]:
+    boards: list[Leaderboard] = []
     for task in TASKS.values():
-        metadata = task.metadata().model_dump(mode="json")
-        scored = metadata["grading_type"] == "score"
-        best = {}
-        attempts = {}
+        metadata = task.metadata()
+        scored = metadata.grading_type == "score"
+        best: dict[str, tuple[tuple[float, datetime, str], SubmissionEntry]] = {}
+        attempts: dict[str, int] = {}
         for item in submissions:
             if item["task_id"] != task.id:
                 continue
@@ -35,18 +67,18 @@ def rank_submissions(submissions):
                 not scored and item.get("passed") is not True
             ):
                 continue
-            value = item["metrics"].get(task.primary_metric) if scored else None
-            if scored and (
-                isinstance(value, bool)
-                or not isinstance(value, (int, float))
-                or not math.isfinite(value)
-            ):
-                continue
-            priority = (
-                (-value if metadata["metric_direction"] == "maximize" else value)
-                if scored
-                else 0
-            )
+            value: float | None = None
+            priority: float = 0
+            if scored:
+                metric = item["metrics"].get(task.primary_metric)
+                if (
+                    isinstance(metric, bool)
+                    or not isinstance(metric, (int, float))
+                    or not math.isfinite(metric)
+                ):
+                    continue
+                value = metric
+                priority = -value if metadata.metric_direction == "maximize" else value
             order = (priority, timestamp(item["submitted_at"]), item["id"])
             if key not in best or order < best[key][0]:
                 best[key] = (
@@ -59,7 +91,7 @@ def rank_submissions(submissions):
                         "submission_id": item["id"],
                     },
                 )
-        entries = []
+        entries: list[RankedEntry] = []
         for rank, (_, entry) in enumerate(
             sorted(best.values(), key=lambda pair: pair[0]), 1
         ):
@@ -72,7 +104,14 @@ def rank_submissions(submissions):
             )
         boards.append(
             {
-                **metadata,
+                "id": metadata.id,
+                "grading_type": metadata.grading_type.value,
+                "primary_metric": metadata.primary_metric,
+                "metric_direction": (
+                    metadata.metric_direction.value
+                    if metadata.metric_direction
+                    else None
+                ),
                 "entries": entries,
                 "submissions": sum(attempts.values()),
                 "participants": len(attempts),
@@ -205,7 +244,7 @@ class LeaderboardService:
         self.database_path = database_path
         self.source = "wandb"
         self.state_path = database_path.with_suffix(".leaderboard.json")
-        self.snapshot = {
+        self.snapshot: LeaderboardSnapshot = {
             "source": self.source,
             "updated_at": None,
             "error": None,
