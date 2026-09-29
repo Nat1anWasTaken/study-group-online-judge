@@ -5,6 +5,8 @@
 #SBATCH --cpus-per-task=24
 #SBATCH --output=logs/lab4-%j.out
 #SBATCH --error=logs/lab4-%j.err
+#SBATCH --partition=dev
+
 
 set -euo pipefail
 
