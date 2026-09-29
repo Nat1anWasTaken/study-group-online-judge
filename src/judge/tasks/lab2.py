@@ -1,7 +1,6 @@
 """Full MMLU reference comparison for Lab 2."""
 
 import hashlib
-import importlib.util
 import json
 import sys
 import traceback
@@ -15,7 +14,7 @@ from tqdm import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from judge.models import JudgeResult, Resources, TestResult
-from judge.tasks.base import Task
+from judge.tasks.base import Task, load_student_function
 
 DATASET_ID = "cais/mmlu"
 DATASET_REVISION = "c30699e8356da336a370243923dbaf21066bb9fe"
@@ -137,18 +136,6 @@ def _reference_predictions(
     return predictions
 
 
-def _load_student_function(submission: Path):
-    source = submission / "src" / "labs" / "lab2.py"
-    if not source.is_file():
-        raise FileNotFoundError("Expected src/labs/lab2.py in the submission")
-    spec = importlib.util.spec_from_file_location("student_lab2", source)
-    if spec is None or spec.loader is None:
-        raise ImportError("Could not import src/labs/lab2.py")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module.mmlu_eval
-
-
 def _failure(name: str, reason: str) -> JudgeResult:
     print(f"[lab2] {name} failed: {reason}", flush=True)
     return JudgeResult(
@@ -172,7 +159,7 @@ class Lab2(Task):
         try:
             try:
                 print("[lab2] loading src/labs/lab2.py", flush=True)
-                evaluate = _load_student_function(submission)
+                evaluate = load_student_function(submission, "lab2").mmlu_eval
                 print("[lab2] running participant MMLU evaluation", flush=True)
                 predictions = evaluate()
                 print("[lab2] participant evaluation finished", flush=True)
