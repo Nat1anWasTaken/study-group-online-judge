@@ -4,7 +4,13 @@ from pathlib import Path
 from types import ModuleType
 from typing import ClassVar
 
-from judge.models import JudgeResult, MetricDirection, Resources
+from judge.models import (
+    GradingType,
+    JudgeResult,
+    MetricDirection,
+    Resources,
+    TaskMetadata,
+)
 
 
 def load_student_function(submission: Path, lab_id: str) -> ModuleType:
@@ -26,8 +32,21 @@ class Task(ABC):
 
     id: ClassVar[str]
     resources: ClassVar[Resources] = Resources()
+    grading_type: ClassVar[GradingType] = GradingType.PASS_FAIL
     primary_metric: ClassVar[str | None] = None
     metric_direction: ClassVar[MetricDirection | None] = None
+
+    def __init__(self) -> None:
+        self.metadata()
+
+    @classmethod
+    def metadata(cls) -> TaskMetadata:
+        return TaskMetadata(
+            id=cls.id,
+            grading_type=cls.grading_type,
+            primary_metric=cls.primary_metric,
+            metric_direction=cls.metric_direction,
+        )
 
     @abstractmethod
     def evaluate(self, submission: Path) -> JudgeResult:

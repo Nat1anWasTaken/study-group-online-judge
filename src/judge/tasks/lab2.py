@@ -1,3 +1,5 @@
+from judge.models import GradingType
+
 """Full MMLU reference comparison for Lab 2."""
 
 import hashlib
@@ -145,6 +147,7 @@ def _failure(name: str, reason: str) -> JudgeResult:
 
 
 class Lab2(Task):
+    grading_type = GradingType.PASS_FAIL
     id = "lab2"
     resources = Resources(cpus=8, memory_gb=32, gpus=1, timeout_seconds=4 * 3600)
 

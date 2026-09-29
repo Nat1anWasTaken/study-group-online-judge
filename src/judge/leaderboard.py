@@ -1,0 +1,278 @@
+"""Public leaderboard snapshots; credentials and source access stay on the server."""
+
+import json
+import math
+import os
+from datetime import UTC, datetime
+from pathlib import Path
+from urllib.parse import urlsplit
+from urllib.request import Request, urlopen
+
+from judge.tasks import TASKS
+
+
+def timestamp(value):
+    parsed = datetime.fromisoformat(str(value))
+    return (
+        parsed.replace(tzinfo=UTC) if parsed.tzinfo is None else parsed.astimezone(UTC)
+    )
+
+
+def rank_submissions(submissions):
+    boards = []
+    for task in TASKS.values():
+        metadata = task.metadata().model_dump(mode="json")
+        scored = metadata["grading_type"] == "score"
+        best = {}
+        attempts = {}
+        for item in submissions:
+            if item["task_id"] != task.id:
+                continue
+            actor = item["github_actor"]
+            key = actor.casefold()
+            attempts[key] = attempts.get(key, 0) + 1
+            if item.get("passed") is False or (
+                not scored and item.get("passed") is not True
+            ):
+                continue
+            value = item["metrics"].get(task.primary_metric) if scored else None
+            if scored and (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not math.isfinite(value)
+            ):
+                continue
+            priority = (
+                (-value if metadata["metric_direction"] == "maximize" else value)
+                if scored
+                else 0
+            )
+            order = (priority, timestamp(item["submitted_at"]), item["id"])
+            if key not in best or order < best[key][0]:
+                best[key] = (
+                    order,
+                    {
+                        "github_actor": actor,
+                        "score": value,
+                        "submitted_at": timestamp(item["submitted_at"]).isoformat(),
+                        "run_url": item.get("run_url"),
+                        "submission_id": item["id"],
+                    },
+                )
+        entries = []
+        for rank, (_, entry) in enumerate(
+            sorted(best.values(), key=lambda pair: pair[0]), 1
+        ):
+            entries.append(
+                {
+                    **entry,
+                    "rank": rank,
+                    "attempts": attempts[entry["github_actor"].casefold()],
+                }
+            )
+        boards.append(
+            {
+                **metadata,
+                "entries": entries,
+                "submissions": sum(attempts.values()),
+                "participants": len(attempts),
+            }
+        )
+    return boards
+
+
+def wandb_submissions():
+    import wandb
+
+    entity = os.getenv("WANDB_ENTITY") or "cerulean-labs"
+    project = os.getenv("WANDB_PROJECT") or "study-group-labs"
+    api = wandb.Api(timeout=20)
+    runs = api.runs(
+        f"{entity}/{project}", filters={"summary_metrics.judge_status": "completed"}
+    )
+    result = []
+    for run in runs:
+        config, summary = run.config, dict(run.summary)
+        if (
+            config.get("task_id") not in TASKS
+            or not isinstance(config.get("github_actor"), str)
+            or not config["github_actor"].strip()
+        ):
+            continue
+        submitted = config.get("submitted_at") or run.created_at
+        try:
+            timestamp(submitted)
+        except ValueError, TypeError:
+            continue
+        result.append(
+            {
+                "id": run.id,
+                "task_id": config["task_id"],
+                "github_actor": config["github_actor"],
+                "submitted_at": submitted,
+                "passed": summary.get("passed"),
+                "metrics": summary,
+                "run_url": run.url,
+            }
+        )
+    return result
+
+
+def new_record(board, previous):
+    """Compare with the best acknowledged result, not the previous poll."""
+    if not board["entries"]:
+        return False
+    if not previous:
+        return True
+    leader, old = board["entries"][0], previous[0]
+    if board["grading_type"] == "pass_fail":
+        return timestamp(leader["submitted_at"]) < timestamp(old["submitted_at"])
+    if board["metric_direction"] == "minimize":
+        return leader["score"] < old["score"]
+    return leader["score"] > old["score"]
+
+
+def post_slack(webhook, boards, changed):
+    names_path = Path(
+        os.getenv(
+            "JUDGE_LAB_NAMES_PATH",
+            str(Path(__file__).resolve().parents[2] / "ui/src/lab-names.json"),
+        )
+    )
+    try:
+        names = json.loads(names_path.read_text())
+    except OSError, ValueError:
+        names = {}
+
+    def escape(value):
+        return (
+            str(value).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        )
+
+    sections = []
+    for board in boards:
+        if board["id"] not in changed or not board["entries"]:
+            continue
+        label = board["id"].replace("lab", "Lab ", 1)
+        name = names.get(board["id"])
+        title = f"{label} ({name})" if name else label
+        leader = board["entries"][0]
+        if board["grading_type"] == "score":
+            direction = (
+                "↓ Lower is better"
+                if board["metric_direction"] == "minimize"
+                else "↑ Higher is better"
+            )
+            rule = f"{escape(board['primary_metric'])} · {direction}"
+            result = f"{leader['score']:.6g}"
+        else:
+            rule = "Pass / fail · Earliest passing submission"
+            result = "Passed"
+        sections.append(
+            f"🧪 *{escape(title)}*\n\n{rule}\n🏅 {escape(leader['github_actor'])} — {result}"
+        )
+    text = "*OJ Leaderboard update*\n\n" + "\n\n".join(sections)
+    payload = {
+        "text": text,
+        "blocks": [{"type": "section", "text": {"type": "mrkdwn", "text": text}}],
+    }
+    workflow = urlsplit(webhook).path.startswith(("/triggers/", "/workflows/"))
+    if workflow:
+        payload = {"text": text}
+    request = Request(
+        webhook,
+        data=json.dumps(payload).encode(),
+        headers={
+            "Content-Type": "application/json",
+            "User-Agent": "study-group-online-judge/0.1",
+        },
+        method="POST",
+    )
+    with urlopen(request, timeout=10) as response:
+        body = response.read().strip()
+        acknowledged = body == b"ok"
+        if workflow and not acknowledged:
+            try:
+                acknowledged = json.loads(body).get("ok") is True
+            except ValueError, AttributeError:
+                acknowledged = False
+        if not 200 <= response.status < 300 or not acknowledged:
+            raise RuntimeError("Slack did not acknowledge notification")
+
+
+class LeaderboardService:
+    def __init__(self, database_path: Path):
+        self.database_path = database_path
+        self.source = "wandb"
+        self.state_path = database_path.with_suffix(".leaderboard.json")
+        self.snapshot = {
+            "source": self.source,
+            "updated_at": None,
+            "error": None,
+            "labs": rank_submissions([]),
+        }
+        self.notified = None
+        if self.state_path.exists():
+            try:
+                saved = json.loads(self.state_path.read_text())
+                if saved["snapshot"]["source"] == self.source:
+                    self.snapshot = saved["snapshot"]
+                    self.notified = saved["notified"]
+            except ValueError, KeyError:
+                pass
+
+    def refresh(self):
+        # A single API worker owns polling. HTTP reads only access the cached snapshot.
+        try:
+            submissions = wandb_submissions()
+            boards = rank_submissions(submissions)
+        except Exception:  # noqa: BLE001 - external failures must not discard standings
+            self.snapshot = {
+                **self.snapshot,
+                "error": "Source refresh failed. Showing the last successful snapshot.",
+            }
+            return
+        self.snapshot = {
+            "source": self.source,
+            "updated_at": datetime.now(UTC).isoformat(),
+            "error": None,
+            "labs": boards,
+        }
+        current = {
+            board["id"]: [
+                {
+                    key: value
+                    for key, value in entry.items()
+                    if key not in {"attempts", "run_url"}
+                }
+                for entry in board["entries"]
+            ]
+            for board in boards
+        }
+        webhook = os.getenv("JUDGE_SLACK_WEBHOOK_URL")
+        changed = [
+            board["id"]
+            for board in boards
+            if self.notified is not None
+            and new_record(board, self.notified.get(board["id"]))
+        ]
+        if self.notified is None:
+            self.notified = current  # Initial sync seeds the all-time best baseline.
+        elif changed:
+            try:
+                if webhook:
+                    post_slack(webhook, boards, changed)
+            except Exception:  # noqa: BLE001 - retain the record for delivery retry
+                self.snapshot["notification_error"] = (
+                    "Slack delivery failed; retrying on the next refresh."
+                )
+            else:
+                for task_id in changed:
+                    self.notified[task_id] = current[task_id]
+        # Ties, lower-ranked changes, and deleted runs never lower the record.
+        self.state_path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = self.state_path.with_suffix(".tmp")
+        temporary.write_text(
+            json.dumps({"snapshot": self.snapshot, "notified": self.notified})
+        )
+        temporary.replace(self.state_path)

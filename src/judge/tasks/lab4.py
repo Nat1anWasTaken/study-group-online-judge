@@ -10,7 +10,13 @@ from datasets import load_dataset
 from tqdm import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from judge.models import JudgeResult, MetricDirection, Resources, TestResult
+from judge.models import (
+    GradingType,
+    JudgeResult,
+    MetricDirection,
+    Resources,
+    TestResult,
+)
 from judge.tasks.base import Task, load_student_function
 
 DATASET = "allenai/c4"
@@ -70,6 +76,7 @@ def evaluate_perplexity(batch: dict[str, list], model, tokenizer) -> dict[str, l
 
 
 class Lab4(Task):
+    grading_type = GradingType.SCORE
     id = "lab4"
     resources = Resources(cpus=8, memory_gb=32, gpus=1, timeout_seconds=4 * 3600)
     primary_metric = "score"
