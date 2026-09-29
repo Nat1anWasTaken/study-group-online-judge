@@ -6,7 +6,7 @@ import torch
 from tqdm import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from judge.models import JudgeResult, Resources, TestResult
+from judge.models import GradingType, JudgeResult, Resources, TestResult
 from judge.tasks.base import Task, load_student_function
 
 MODEL_ID = "openai-community/gpt2"
@@ -116,6 +116,7 @@ def _reference_completion(
 
 
 class Lab1(Task):
+    grading_type = GradingType.PASS_FAIL
     id = "lab1"
     resources = Resources(cpus=4, memory_gb=8, timeout_seconds=600)
 
