@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+import sqlite3
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
@@ -10,7 +11,7 @@ from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
 from judge.agent_channel import AgentChannel
-from judge.database import migrate_database
+from judge.database import migrate_database, prune_stale_sub_judges
 from judge.leaderboard import LeaderboardService
 from judge.routers import agents, health, leaderboard, submissions
 
@@ -44,12 +45,32 @@ async def lifespan(judge_app: FastAPI) -> AsyncIterator[None]:
             await asyncio.sleep(interval)
 
     poller = asyncio.create_task(refresh_leaderboard())
+
+    async def expire_sub_judges():
+        while True:
+            try:
+                expired = await asyncio.to_thread(prune_stale_sub_judges, database_path)
+                for judge_id in expired:
+                    logging.getLogger("uvicorn.error.judge").warning(
+                        "Deregistered sub-judge %s after five minutes without a heartbeat",
+                        judge_id,
+                    )
+            except OSError, sqlite3.Error:
+                logging.getLogger("uvicorn.error.judge").exception(
+                    "Unable to expire stale sub-judges"
+                )
+            await asyncio.sleep(15)
+
+    agent_reaper = asyncio.create_task(expire_sub_judges())
     try:
         yield
     finally:
         poller.cancel()
+        agent_reaper.cancel()
         with suppress(asyncio.CancelledError):
             await poller
+        with suppress(asyncio.CancelledError):
+            await agent_reaper
 
 
 app = FastAPI(lifespan=lifespan)
