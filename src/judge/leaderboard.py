@@ -1,15 +1,35 @@
 """Public leaderboard snapshots; credentials and source access stay on the server."""
 
 import json
+import logging
 import math
 import os
+import traceback
 from datetime import UTC, datetime
 from pathlib import Path
+from time import monotonic
 from typing import NotRequired, TypedDict
 from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
 
 from judge.tasks import TASKS
+
+# Inherit Uvicorn's configured handlers and level so INFO reaches container logs.
+logger = logging.getLogger("uvicorn.error.judge.leaderboard")
+
+
+def safe_traceback(error: Exception) -> str:
+    detail = "".join(traceback.format_exception(error))
+    for name in (
+        "WANDB_API_KEY",
+        "JUDGE_API_TOKEN",
+        "JUDGE_AGENT_TOKEN",
+        "JUDGE_SLACK_WEBHOOK_URL",
+    ):
+        secret = os.getenv(name)
+        if secret:
+            detail = detail.replace(secret, "[REDACTED]")
+    return detail
 
 
 class SubmissionEntry(TypedDict):
@@ -130,18 +150,22 @@ def wandb_submissions():
         f"{entity}/{project}", filters={"summary_metrics.judge_status": "completed"}
     )
     result = []
+    scanned = skipped_metadata = skipped_timestamp = 0
     for run in runs:
+        scanned += 1
         config, summary = run.config, dict(run.summary)
         if (
             config.get("task_id") not in TASKS
             or not isinstance(config.get("github_actor"), str)
             or not config["github_actor"].strip()
         ):
+            skipped_metadata += 1
             continue
         submitted = config.get("submitted_at") or run.created_at
         try:
             timestamp(submitted)
         except ValueError, TypeError:
+            skipped_timestamp += 1
             continue
         result.append(
             {
@@ -154,6 +178,15 @@ def wandb_submissions():
                 "run_url": run.url,
             }
         )
+    logger.info(
+        "W&B runs fetched project=%s/%s scanned=%d accepted=%d skipped_metadata=%d skipped_timestamp=%d",
+        entity,
+        project,
+        scanned,
+        len(result),
+        skipped_metadata,
+        skipped_timestamp,
+    )
     return result
 
 
@@ -262,15 +295,35 @@ class LeaderboardService:
 
     def refresh(self):
         # A single API worker owns polling. HTTP reads only access the cached snapshot.
+        started = monotonic()
+        project = f"{os.getenv('WANDB_ENTITY') or 'cerulean-labs'}/{os.getenv('WANDB_PROJECT') or 'study-group-labs'}"
+        stage = "fetch"
+        logger.info("W&B refresh started project=%s", project)
         try:
             submissions = wandb_submissions()
+            stage = "rank"
             boards = rank_submissions(submissions)
-        except Exception:  # noqa: BLE001 - external failures must not discard standings
+        except Exception as error:  # noqa: BLE001 - retain last good standings
+            logger.error(
+                "W&B refresh failed project=%s stage=%s elapsed=%.2fs last_success=%s\n%s",
+                project,
+                stage,
+                monotonic() - started,
+                self.snapshot["updated_at"],
+                safe_traceback(error),
+            )
             self.snapshot = {
                 **self.snapshot,
                 "error": "Source refresh failed. Showing the last successful snapshot.",
             }
             return
+        logger.info(
+            "W&B refresh succeeded project=%s elapsed=%.2fs submissions=%d ranked=%s",
+            project,
+            monotonic() - started,
+            len(submissions),
+            {board["id"]: len(board["entries"]) for board in boards},
+        )
         self.snapshot = {
             "source": self.source,
             "updated_at": datetime.now(UTC).isoformat(),

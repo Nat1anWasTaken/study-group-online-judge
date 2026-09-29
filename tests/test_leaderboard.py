@@ -228,3 +228,40 @@ def test_record_direction_and_pass_fail():
     }
     assert new_record(passed, [])
     assert not new_record(passed, [{"submitted_at": "2026-09-01T00:00:00Z"}])
+
+
+def test_refresh_logs_failure_details_without_credentials(
+    tmp_path, monkeypatch, caplog
+):
+    monkeypatch.setenv("WANDB_API_KEY", "test-secret-key")
+    service = LeaderboardService(tmp_path / "judge.db")
+    with patch(
+        "judge.leaderboard.wandb_submissions",
+        side_effect=RuntimeError("permission denied for test-secret-key"),
+    ):
+        service.refresh()
+    assert "stage=fetch" in caplog.text
+    assert "RuntimeError: permission denied for [REDACTED]" in caplog.text
+    assert "test-secret-key" not in caplog.text
+    assert "Traceback" in caplog.text
+    assert "permission denied" not in json.dumps(service.snapshot)
+
+
+def test_refresh_logs_success_and_ranking_failure(tmp_path, caplog):
+    import logging
+
+    caplog.set_level(logging.INFO, logger="uvicorn.error.judge.leaderboard")
+    service = LeaderboardService(tmp_path / "judge.db")
+    with patch("judge.leaderboard.wandb_submissions", return_value=[submission()]):
+        service.refresh()
+        assert "W&B refresh started" in caplog.text
+        assert "W&B refresh succeeded" in caplog.text
+        assert "submissions=1" in caplog.text
+        with patch(
+            "judge.leaderboard.rank_submissions",
+            side_effect=ValueError("bad ranking input"),
+        ):
+            service.refresh()
+    assert "stage=rank" in caplog.text
+    assert "ValueError: bad ranking input" in caplog.text
+    assert service.snapshot["labs"][-1]["entries"][0]["score"] == 4

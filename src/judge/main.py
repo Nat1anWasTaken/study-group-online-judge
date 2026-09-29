@@ -38,7 +38,7 @@ async def lifespan(judge_app: FastAPI) -> AsyncIterator[None]:
             try:
                 await asyncio.to_thread(judge_app.state.leaderboard.refresh)
             except OSError:
-                logging.getLogger(__name__).error(
+                logging.getLogger("uvicorn.error.judge").exception(
                     "Unable to persist leaderboard snapshot"
                 )
             await asyncio.sleep(interval)
