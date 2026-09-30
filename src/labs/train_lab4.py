@@ -27,7 +27,8 @@ TOKENIZER_ID = "openai-community/gpt2"
 SEQUENCE_LENGTH = 1024
 PER_DEVICE_BATCH_SIZE = 64
 GRADIENT_ACCUMULATION_STEPS = 2
-TRAINING_SECONDS = 26 * 60
+EXPERIMENT = "A"
+TRAINING_SECONDS = 25 * 60
 LEARNING_RATE = 6e-4
 WARMUP_RATIO = 0.05
 WEIGHT_DECAY = 0.1
@@ -37,18 +38,15 @@ RESIDUAL_DROPOUT = 0.0
 EMBEDDING_DROPOUT = 0.0
 ATTENTION_DROPOUT = 0.0
 SEED = 42
-MAX_STEPS = 4_800
+MAX_STEPS = 100_000
 OJ_DOCUMENTS = 100_000
 EVAL_DOCUMENTS = 2_048
-EVAL_STEPS = 1_200
 EVAL_BATCH_SIZE = 8
-PREPARED_BLOCKS = MAX_STEPS * PER_DEVICE_BATCH_SIZE * GRADIENT_ACCUMULATION_STEPS * 2
 WORK_DIR = Path(
     os.environ.get("LAB4_WORK_DIR", f"/work/{os.environ.get('USER', 'user')}/lab4")
 )
 PREPARED_DATA_DIR = WORK_DIR / "c4-packed"
 PREPARED_EVAL_DIR = WORK_DIR / "c4-dev"
-OUTPUT_DIR = WORK_DIR / "gpt2-small"
 HF_REPO_ID = os.environ.get("LAB4_HF_REPO_ID", "")
 
 
@@ -150,10 +148,45 @@ class ValidationCallback(TrainerCallback):
     def __init__(self, trainer):
         self.trainer = trainer
         self.last_eval_step = None
+        self.next_eval = 0.25
+        self.progress = 0.0
+
+    def on_train_begin(self, args, state, control, **kwargs):
+        self.started = time.time()
+        self.deadline = float(os.environ["LAB4_START_TIME"]) + TRAINING_SECONDS
+        self.duration = self.deadline - self.started
+        if self.duration <= 0:
+            raise RuntimeError("Startup consumed the training budget")
+
+    def update_progress(self, args):
+        progress = torch.tensor(
+            [(time.time() - self.started) / self.duration],
+            dtype=torch.float64,
+            device=args.device,
+        )
+        if torch.distributed.is_initialized():
+            torch.distributed.broadcast(progress, src=0)
+        self.progress = min(1.0, max(0.0, progress.item()))
+
+    def on_step_begin(self, args, state, control, optimizer=None, **kwargs):
+        self.update_progress(args)
+        if self.progress < WARMUP_RATIO:
+            scale = self.progress / WARMUP_RATIO
+        else:
+            scale = 0.5 * (1 + math.cos(
+                math.pi * (self.progress - WARMUP_RATIO) / (1 - WARMUP_RATIO)
+            ))
+        self.trainer.lr_scale = scale
+        for group in optimizer.param_groups:
+            group["lr"] = LEARNING_RATE * scale
 
     def on_step_end(self, args, state, control, **kwargs):
-        if state.global_step % EVAL_STEPS == 0:
+        self.update_progress(args)
+        if self.progress >= 1.0:
+            control.should_training_stop = True
+        elif self.progress >= self.next_eval and self.next_eval <= 0.75:
             self.evaluate()
+            self.next_eval += 0.25
 
     def evaluate(self):
         trainer = self.trainer
@@ -222,20 +255,14 @@ def collate(examples):
     return batch
 
 
-class Deadline(TrainerCallback):
-    def __init__(self, seconds):
-        self.deadline = time.monotonic() + seconds
-
-    def on_step_end(self, args, state, control, **kwargs):
-        if state.global_step % 50:
-            return
-        flag = torch.tensor(
-            [time.monotonic() > self.deadline], device=args.device, dtype=torch.int32
-        )
-        if torch.distributed.is_initialized():
-            torch.distributed.all_reduce(flag, op=torch.distributed.ReduceOp.MAX)
-        if flag.item():
-            control.should_training_stop = True
+class TimedTrainer(Trainer):
+    def create_scheduler(self, num_training_steps, optimizer=None):
+        if self.lr_scheduler is None:
+            self.lr_scale = 0.0
+            self.lr_scheduler = torch.optim.lr_scheduler.LambdaLR(
+                optimizer or self.optimizer, lambda step: self.lr_scale
+            )
+        return self.lr_scheduler
 
 
 def train():
@@ -248,12 +275,22 @@ def train():
     torch.backends.cudnn.allow_tf32 = True
 
     dataset = load_from_disk(str(PREPARED_DATA_DIR)).with_format("torch")
-    if len(dataset) != PREPARED_BLOCKS:
-        raise ValueError(f"Expected {PREPARED_BLOCKS:,} blocks. Run prepare_lab4.py again.")
-    print(f"Training on {len(dataset):,} blocks (one pass on 2 GPUs).", flush=True)
+    print(f"Training on {len(dataset):,} shared blocks.", flush=True)
     tokenizer = AutoTokenizer.from_pretrained(str(PREPARED_DATA_DIR / "tokenizer"))
     eval_dataset, eval_metadata = load_validation()
     provenance = code_revision()
+    run_name = f"lab4-{EXPERIMENT}-{provenance['git_commit'][:8]}-{os.environ.get('SLURM_JOB_ID', 'local')}"
+    output_dir = WORK_DIR / "runs" / run_name
+    hf_repo_id = f"{HF_REPO_ID}-{EXPERIMENT.lower()}-{provenance['git_commit'][:8]}"
+    provenance.update(
+        experiment=EXPERIMENT,
+        slurm_job_id=os.environ.get("SLURM_JOB_ID"),
+        hf_model_id=hf_repo_id,
+        training_budget_seconds=TRAINING_SECONDS,
+        training_dataset_fingerprint=dataset._fingerprint,
+        training_blocks=len(dataset),
+        schedule="cosine",
+    )
     config = GPT2Config(
         vocab_size=50304,
         n_positions=SEQUENCE_LENGTH,
@@ -273,10 +310,10 @@ def train():
     )
 
     model = GPT2LMHeadModel(config)
-    trainer = Trainer(
+    trainer = TimedTrainer(
         model=model,
         args=TrainingArguments(
-            output_dir=str(OUTPUT_DIR),
+            output_dir=str(output_dir),
             per_device_train_batch_size=PER_DEVICE_BATCH_SIZE,
             gradient_accumulation_steps=GRADIENT_ACCUMULATION_STEPS,
             max_steps=MAX_STEPS,
@@ -297,8 +334,7 @@ def train():
             ddp_find_unused_parameters=False,
             logging_steps=10,
             report_to="wandb",
-            run_name=f"lab4-{provenance['git_commit'][:8]}"
-            + ("-dirty" if provenance["git_dirty"] else ""),
+            run_name=run_name,
             include_num_input_tokens_seen="all",
             save_strategy="no",
             eval_strategy="no",
@@ -310,12 +346,12 @@ def train():
         data_collator=collate,
         processing_class=tokenizer,
         callbacks=[
-            Deadline(seconds=TRAINING_SECONDS - 60),
             ValidationWandbCallback(provenance, eval_metadata),
         ],
     )
     validation = ValidationCallback(trainer)
     trainer.add_callback(validation)
+    allocation_started = float(os.environ["LAB4_START_TIME"])
     result = trainer.train()
     if validation.last_eval_step != trainer.state.global_step:
         validation.evaluate()
@@ -330,9 +366,19 @@ def train():
     trainer.save_model()
 
     if trainer.is_world_process_zero():
-        model.push_to_hub(HF_REPO_ID)
-        tokenizer.push_to_hub(HF_REPO_ID)
-        print(f"Final model repository: {HF_REPO_ID}", flush=True)
+        model.push_to_hub(hf_repo_id)
+        tokenizer.push_to_hub(hf_repo_id)
+        wandb.run.summary.update(
+            final_eval_perplexity=wandb.run.summary.get("last_eval_perplexity"),
+            final_eval_loss=wandb.run.summary.get("last_eval_loss"),
+            allocation_elapsed_seconds=time.time() - allocation_started,
+            hf_model_id=hf_repo_id,
+        )
+        print(f"Final model repository: {hf_repo_id}", flush=True)
+        wandb.finish()
+    trainer.accelerator.wait_for_everyone()
+    if torch.distributed.is_initialized():
+        torch.distributed.destroy_process_group()
 
 
 if __name__ == "__main__":
