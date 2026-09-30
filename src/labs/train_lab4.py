@@ -276,7 +276,6 @@ class TimedTrainer(Trainer):
                 return_tensors="pt",
             )
             batch["labels"] = batch["input_ids"].clone()
-    batch["attention_mask"] = torch.ones_like(batch["input_ids"])
             batch["labels"].masked_fill_(~batch["attention_mask"].bool(), -100)
             batch["labels"][:, 0] = -100
             yield batch
@@ -415,21 +414,21 @@ def train():
     trainer.save_model()
 
     if trainer.is_world_process_zero():
-        wandb.run.summary.update(
+        wandb.run.summary.update(dict(
             final_eval_perplexity=wandb.run.summary.get("last_eval_perplexity"),
             final_eval_loss=wandb.run.summary.get("last_eval_loss"),
             hf_upload_completed=False,
-        )
+        ))
         print(f"Final dev perplexity: {wandb.run.summary['last_eval_perplexity']}", flush=True)
         model.push_to_hub(hf_repo_id)
         tokenizer.push_to_hub(hf_repo_id)
-        wandb.run.summary.update(
+        wandb.run.summary.update(dict(
             final_eval_perplexity=wandb.run.summary.get("last_eval_perplexity"),
             final_eval_loss=wandb.run.summary.get("last_eval_loss"),
             allocation_elapsed_seconds=time.time() - allocation_started,
             hf_upload_completed=True,
             hf_model_id=hf_repo_id,
-        )
+        ))
         print(f"Final model repository: {hf_repo_id}", flush=True)
         wandb.finish()
     trainer.accelerator.wait_for_everyone()
