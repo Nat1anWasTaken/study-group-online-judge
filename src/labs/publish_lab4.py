@@ -28,6 +28,10 @@ metrics = {
     "publish_runtime": time.monotonic() - started,
     "hf_model_id": model_id,
     "train_steps_per_second": summary["train/global_step"] / summary["train_runtime"],
+    "train_samples_per_second": (
+        summary["train/global_step"] * run.config["per_device_train_batch_size"]
+        * run.config["gradient_accumulation_steps"] * 2 / summary["train_runtime"]
+    ),
 }
 if training_job in ("467196", "467197", "467198", "467199", "467200"):
     metrics["recovered_after_training_job_failure"] = True
