@@ -2,6 +2,7 @@ import hashlib
 import json
 import math
 import os
+import random
 import subprocess
 import time
 from pathlib import Path
@@ -27,7 +28,7 @@ TOKENIZER_ID = "openai-community/gpt2"
 SEQUENCE_LENGTH = 1024
 PER_DEVICE_BATCH_SIZE = 64
 GRADIENT_ACCUMULATION_STEPS = 1
-EXPERIMENT = "C"
+EXPERIMENT = "F"
 TRAINING_SECONDS = 25 * 60
 LEARNING_RATE = 6e-4
 WARMUP_RATIO = 0.05
@@ -252,10 +253,42 @@ class ValidationWandbCallback(TrainerCallback):
 def collate(examples):
     batch = default_data_collator(examples)
     batch["labels"] = batch["input_ids"].clone()
+    batch["attention_mask"] = torch.ones_like(batch["input_ids"])
     return batch
 
 
 class TimedTrainer(Trainer):
+    def prefix_batches(self):
+        rng = random.Random(SEED)
+        sizes = (128, 256, 512, 1024)
+        buckets = self.prefix_data
+        weights = [len(buckets[size]) for size in sizes]
+        world_size = self.accelerator.num_processes
+        rank = self.accelerator.process_index
+        global_batch = PER_DEVICE_BATCH_SIZE * world_size
+        while True:
+            size = rng.choices(sizes, weights=weights)[0]
+            indices = rng.sample(range(len(buckets[size])), global_batch)
+            indices = indices[rank * PER_DEVICE_BATCH_SIZE:(rank + 1) * PER_DEVICE_BATCH_SIZE]
+            rows = [row.tolist() for row in buckets[size][indices]["input_ids"]]
+            batch = self.processing_class.pad(
+                {"input_ids": rows}, padding="max_length", max_length=size,
+                return_tensors="pt",
+            )
+            batch["labels"] = batch["input_ids"].clone()
+    batch["attention_mask"] = torch.ones_like(batch["input_ids"])
+            batch["labels"].masked_fill_(~batch["attention_mask"].bool(), -100)
+            batch["labels"][:, 0] = -100
+            yield batch
+
+    def get_batch_samples(self, epoch_iterator, num_batches, device):
+        if self.validation.progress >= 0.85:
+            if self.prefix_iterator is None:
+                self.prefix_iterator = self.prefix_batches()
+                self.log({"prefix_phase_started": 1})
+            return super().get_batch_samples(self.prefix_iterator, num_batches, device)
+        return super().get_batch_samples(epoch_iterator, num_batches, device)
+
     def create_scheduler(self, num_training_steps, optimizer=None):
         if self.lr_scheduler is None:
             self.lr_scale = 0.0
@@ -290,6 +323,8 @@ def train():
         training_dataset_fingerprint=dataset._fingerprint,
         training_blocks=len(dataset),
         schedule="cosine",
+        prefix_fraction=0.15,
+        prefix_data=json.loads((WORK_DIR / "c4-prefix" / "metadata.json").read_text()),
     )
     config = GPT2Config(
         vocab_size=50304,
@@ -335,7 +370,7 @@ def train():
             logging_steps=10,
             report_to="wandb",
             run_name=run_name,
-            include_num_input_tokens_seen="all",
+            include_num_input_tokens_seen="non_padding",
             save_strategy="no",
             eval_strategy="no",
             per_device_eval_batch_size=EVAL_BATCH_SIZE,
@@ -350,6 +385,12 @@ def train():
         ],
     )
     validation = ValidationCallback(trainer)
+    trainer.validation = validation
+    trainer.prefix_iterator = None
+    trainer.prefix_data = {
+        size: load_from_disk(str(WORK_DIR / "c4-prefix" / str(size))).with_format("torch")
+        for size in (128, 256, 512, 1024)
+    }
     trainer.add_callback(validation)
     allocation_started = float(os.environ["LAB4_START_TIME"])
     result = trainer.train()
