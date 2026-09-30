@@ -276,35 +276,37 @@ def validation_metrics(totals):
     }
 
 
-class ValidationTrainer(Trainer):
-    last_eval_step = None
+class ValidationCallback(TrainerCallback):
+    def __init__(self, trainer):
+        self.trainer = trainer
+        self.last_eval_step = None
 
-    def evaluate(self, eval_dataset=None, ignore_keys=None, metric_key_prefix="eval"):
+    def on_step_end(self, args, state, control, **kwargs):
+        if state.global_step % EVAL_STEPS == 0:
+            self.evaluate()
+
+    def evaluate(self):
+        trainer = self.trainer
         started = time.monotonic()
-        model = self.accelerator.unwrap_model(
-            self.model_wrapped, keep_torch_compile=False
+        model = trainer.accelerator.unwrap_model(
+            trainer.model_wrapped, keep_torch_compile=False
         )
         totals = validation_totals(
             model,
-            self.eval_dataset if eval_dataset is None else eval_dataset,
-            self.processing_class,
-            self.args.device,
-            self.args.per_device_eval_batch_size,
-            self.accelerator.process_index,
-            self.accelerator.num_processes,
+            trainer.eval_dataset,
+            trainer.processing_class,
+            trainer.args.device,
+            trainer.args.per_device_eval_batch_size,
+            trainer.accelerator.process_index,
+            trainer.accelerator.num_processes,
         )
         if torch.distributed.is_initialized():
             torch.distributed.all_reduce(totals)
         metrics = validation_metrics(totals)
         metrics["runtime"] = time.monotonic() - started
-        metrics = {
-            f"{metric_key_prefix}_{key}": value for key, value in metrics.items()
-        }
-        self.last_eval_step = self.state.global_step
-        self.log(metrics)
-        self.control = self.callback_handler.on_evaluate(
-            self.args, self.state, self.control, metrics
-        )
+        metrics = {f"eval_{key}": value for key, value in metrics.items()}
+        self.last_eval_step = trainer.state.global_step
+        trainer.log(metrics)
         return metrics
 
 
@@ -401,7 +403,7 @@ def train():
     )
 
     model = GPT2LMHeadModel(config)
-    trainer = ValidationTrainer(
+    trainer = Trainer(
         model=model,
         args=TrainingArguments(
             output_dir=str(OUTPUT_DIR),
@@ -429,8 +431,7 @@ def train():
             + ("-dirty" if provenance["git_dirty"] else ""),
             include_num_input_tokens_seen="all",
             save_strategy="no",
-            eval_strategy="steps",
-            eval_steps=EVAL_STEPS,
+            eval_strategy="no",
             per_device_eval_batch_size=EVAL_BATCH_SIZE,
             torch_compile=True,
         ),
@@ -443,9 +444,11 @@ def train():
             ValidationWandbCallback(provenance, eval_metadata),
         ],
     )
+    validation = ValidationCallback(trainer)
+    trainer.add_callback(validation)
     result = trainer.train()
-    if trainer.last_eval_step != trainer.state.global_step:
-        trainer.evaluate()
+    if validation.last_eval_step != trainer.state.global_step:
+        validation.evaluate()
 
     result.metrics["train_tokens_per_second"] = (
         trainer.state.num_input_tokens_seen / result.metrics["train_runtime"]
