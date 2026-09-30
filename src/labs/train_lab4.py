@@ -27,7 +27,7 @@ TOKENIZER_ID = "openai-community/gpt2"
 SEQUENCE_LENGTH = 1024
 PER_DEVICE_BATCH_SIZE = 64
 GRADIENT_ACCUMULATION_STEPS = 1
-EXPERIMENT = "C"
+EXPERIMENT = "E"
 TRAINING_SECONDS = 25 * 60
 LEARNING_RATE = 6e-4
 WARMUP_RATIO = 0.05
@@ -172,10 +172,10 @@ class ValidationCallback(TrainerCallback):
         self.update_progress(args)
         if self.progress < WARMUP_RATIO:
             scale = self.progress / WARMUP_RATIO
+        elif self.progress < 0.8:
+            scale = 1.0
         else:
-            scale = 0.5 * (1 + math.cos(
-                math.pi * (self.progress - WARMUP_RATIO) / (1 - WARMUP_RATIO)
-            ))
+            scale = (1.0 - self.progress) / 0.2
         self.trainer.lr_scale = scale
         for group in optimizer.param_groups:
             group["lr"] = LEARNING_RATE * scale
@@ -289,7 +289,7 @@ def train():
         training_budget_seconds=TRAINING_SECONDS,
         training_dataset_fingerprint=dataset._fingerprint,
         training_blocks=len(dataset),
-        schedule="cosine",
+        schedule="wsd_5_75_20",
     )
     config = GPT2Config(
         vocab_size=50304,
