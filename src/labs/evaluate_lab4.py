@@ -24,5 +24,5 @@ with tempfile.TemporaryDirectory(prefix="lab4-oj-") as directory:
     print(json.dumps(result.model_dump(), indent=2), flush=True)
     wandb.log({**result.metrics, "score": result.score, "passed": result.passed})
     wandb.run.summary.update(result.metrics)
-    wandb.run.summary.update(score=result.score, passed=result.passed)
+    wandb.run.summary.update({"score": result.score, "passed": result.passed})
 wandb.finish()
