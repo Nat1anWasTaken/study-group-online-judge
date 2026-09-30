@@ -16,7 +16,8 @@ module load cuda/13.0
 cd "$SLURM_SUBMIT_DIR"
 
 # Before sbatch: mkdir -p logs; uv sync --no-sources --no-dev
-# Run train_lab4.py prepare separately, outside this GPU allocation.
+# Prepare data first: sbatch src/labs/prepare_lab4.sbatch
+# Wait for preparation to succeed before submitting this training job.
 
 export WANDB_PROJECT=gpt2-training
 export TOKENIZERS_PARALLELISM=false
