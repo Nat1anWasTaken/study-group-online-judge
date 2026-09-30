@@ -376,6 +376,14 @@ def train():
     if validation.last_eval_step != trainer.state.global_step:
         validation.evaluate()
 
+    result.metrics["train_steps_per_second"] = (
+        trainer.state.global_step / result.metrics["train_runtime"]
+    )
+    result.metrics["train_samples_per_second"] = (
+        trainer.state.global_step * PER_DEVICE_BATCH_SIZE
+        * GRADIENT_ACCUMULATION_STEPS * trainer.accelerator.num_processes
+        / result.metrics["train_runtime"]
+    )
     result.metrics["train_tokens_per_second"] = (
         trainer.state.num_input_tokens_seen / result.metrics["train_runtime"]
     )
@@ -386,15 +394,21 @@ def train():
     trainer.save_model()
 
     if trainer.is_world_process_zero():
-        model.push_to_hub(hf_repo_id)
-        tokenizer.push_to_hub(hf_repo_id)
-        wandb.run.summary.update(
+        wandb.run.summary.update(dict(
+            final_eval_perplexity=wandb.run.summary.get("last_eval_perplexity"),
+            final_eval_loss=wandb.run.summary.get("last_eval_loss"),
+            hf_upload_completed=False,
+        ))
+        print(f"Final dev perplexity: {wandb.run.summary['last_eval_perplexity']}", flush=True)
+        wandb.run.summary.update(dict(
             final_eval_perplexity=wandb.run.summary.get("last_eval_perplexity"),
             final_eval_loss=wandb.run.summary.get("last_eval_loss"),
             allocation_elapsed_seconds=time.time() - allocation_started,
+            hf_upload_completed=False,
+            training_completed=True,
             hf_model_id=hf_repo_id,
-        )
-        print(f"Final model repository: {hf_repo_id}", flush=True)
+        ))
+        print(f"Saved final model at {output_dir}; publish separately to {hf_repo_id}", flush=True)
         wandb.finish()
     trainer.accelerator.wait_for_everyone()
     if torch.distributed.is_initialized():
