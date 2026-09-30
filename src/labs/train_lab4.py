@@ -420,16 +420,15 @@ def train():
             hf_upload_completed=False,
         ))
         print(f"Final dev perplexity: {wandb.run.summary['last_eval_perplexity']}", flush=True)
-        model.push_to_hub(hf_repo_id)
-        tokenizer.push_to_hub(hf_repo_id)
         wandb.run.summary.update(dict(
             final_eval_perplexity=wandb.run.summary.get("last_eval_perplexity"),
             final_eval_loss=wandb.run.summary.get("last_eval_loss"),
             allocation_elapsed_seconds=time.time() - allocation_started,
-            hf_upload_completed=True,
+            hf_upload_completed=False,
+            training_completed=True,
             hf_model_id=hf_repo_id,
         ))
-        print(f"Final model repository: {hf_repo_id}", flush=True)
+        print(f"Saved final model at {output_dir}; publish separately to {hf_repo_id}", flush=True)
         wandb.finish()
     trainer.accelerator.wait_for_everyone()
     if torch.distributed.is_initialized():
