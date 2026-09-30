@@ -220,3 +220,5 @@ __marimo__/
 # Judge runtime state
 /data/
 /work/
+/logs/
+/wandb/
