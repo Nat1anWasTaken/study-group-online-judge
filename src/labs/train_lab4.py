@@ -22,12 +22,13 @@ from transformers import (
 )
 
 import wandb
+from muon_lab4 import MuonAdamW
 
 TOKENIZER_ID = "openai-community/gpt2"
 SEQUENCE_LENGTH = 1024
 PER_DEVICE_BATCH_SIZE = 64
 GRADIENT_ACCUMULATION_STEPS = 2
-EXPERIMENT = "A"
+EXPERIMENT = "G"
 TRAINING_SECONDS = 25 * 60
 LEARNING_RATE = 6e-4
 WARMUP_RATIO = 0.05
@@ -256,6 +257,21 @@ def collate(examples):
 
 
 class TimedTrainer(Trainer):
+    def create_optimizer(self):
+        if self.optimizer is None:
+            decay_names = self.get_decay_parameter_names(self.model)
+            matrices, decay, no_decay = [], [], []
+            for name, parameter in self.model.named_parameters():
+                if name.startswith("transformer.h.") and parameter.ndim == 2:
+                    matrices.append(parameter)
+                elif name in decay_names:
+                    decay.append(parameter)
+                else:
+                    no_decay.append(parameter)
+            self.optimizer = MuonAdamW(matrices, decay, no_decay,
+                                       LEARNING_RATE, WEIGHT_DECAY, ADAM_BETAS)
+        return self.optimizer
+
     def create_scheduler(self, num_training_steps, optimizer=None):
         if self.lr_scheduler is None:
             self.lr_scale = 0.0
@@ -290,6 +306,10 @@ def train():
         training_dataset_fingerprint=dataset._fingerprint,
         training_blocks=len(dataset),
         schedule="cosine",
+        optimizer_recipe="muon_hidden_adamw_rest",
+        muon_momentum=0.95,
+        muon_ns_steps=5,
+        muon_adjust_lr_fn="match_rms_adamw",
     )
     config = GPT2Config(
         vocab_size=50304,
