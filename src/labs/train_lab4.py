@@ -1,14 +1,17 @@
 import argparse
 import os
+import time
 from pathlib import Path
 
 import torch
+import torch.distributed
 from datasets import Dataset, Features, Sequence, Value, load_dataset, load_from_disk
 from transformers import (
     AutoTokenizer,
     GPT2Config,
     GPT2LMHeadModel,
     Trainer,
+    TrainerCallback,
     TrainingArguments,
     default_data_collator,
     set_seed,
@@ -18,6 +21,7 @@ TOKENIZER_ID = "openai-community/gpt2"
 SEQUENCE_LENGTH = 1024
 PER_DEVICE_BATCH_SIZE = 64
 GRADIENT_ACCUMULATION_STEPS = 2
+TRAINING_SECONDS= 25*60
 LEARNING_RATE = 6e-4
 WARMUP_RATIO = 0.05
 WEIGHT_DECAY = 0.1
@@ -89,6 +93,22 @@ def collate(examples):
     return batch
 
 
+class Deadline(TrainerCallback):
+    def __init__(self, seconds):
+        self.deadline = time.monotonic() + seconds
+
+    def on_step_end(self, args, state, control, **kwargs):
+        if state.global_step % 50:
+            return
+        flag = torch.tensor(
+            [time.monotonic() > self.deadline], device=args.device, dtype=torch.int32
+        )
+        if torch.distributed.is_initialized():
+            torch.distributed.all_reduce(flag, op=torch.distributed.ReduceOp.MAX)
+        if flag.item():
+            control.should_training_stop = True
+
+
 def train():
     if not HF_REPO_ID:
         raise ValueError("Set LAB4_HF_REPO_ID to Cerulean's actual org/model-name.")
@@ -152,6 +172,7 @@ def train():
         train_dataset=dataset,
         data_collator=collate,
         processing_class=tokenizer,
+        callbacks=[Deadline(seconds=TRAINING_SECONDS)]
     )
     result = trainer.train()
 
