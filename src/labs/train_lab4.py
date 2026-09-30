@@ -21,7 +21,7 @@ TOKENIZER_ID = "openai-community/gpt2"
 SEQUENCE_LENGTH = 1024
 PER_DEVICE_BATCH_SIZE = 64
 GRADIENT_ACCUMULATION_STEPS = 2
-TRAINING_SECONDS= 25*60
+TRAINING_SECONDS = 25 * 60
 LEARNING_RATE = 6e-4
 WARMUP_RATIO = 0.05
 WEIGHT_DECAY = 0.1
@@ -76,9 +76,11 @@ def prepare():
         features=Features(
             {"input_ids": Sequence(Value("int32"), length=SEQUENCE_LENGTH)}
         ),
-        cache_dir=str(WORK_DIR / "prepare-cache"),
+        cache_dir=str(WORK_DIR / "prepare-cache-1b"),
     )
 
+    if len(dataset) != PREPARED_BLOCKS:
+        raise ValueError(f"Expected {PREPARED_BLOCKS:,} blocks, got {len(dataset):,}.")
     dataset.save_to_disk(str(PREPARED_DATA_DIR))
     tokenizer = AutoTokenizer.from_pretrained(TOKENIZER_ID)
     tokenizer.pad_token = tokenizer.eos_token
@@ -119,6 +121,9 @@ def train():
     torch.backends.cudnn.allow_tf32 = True
 
     dataset = load_from_disk(str(PREPARED_DATA_DIR)).with_format("torch")
+    if len(dataset) != PREPARED_BLOCKS:
+        raise ValueError(f"Expected {PREPARED_BLOCKS:,} blocks. Run prepare again.")
+    print(f"Training on {len(dataset):,} blocks (one pass on 2 GPUs).", flush=True)
     tokenizer = AutoTokenizer.from_pretrained(str(PREPARED_DATA_DIR / "tokenizer"))
     config = GPT2Config(
         vocab_size=50304,
@@ -167,12 +172,12 @@ def train():
             include_num_input_tokens_seen="all",
             save_strategy="no",
             eval_strategy="no",
-            torch_compile=True
+            torch_compile=True,
         ),
         train_dataset=dataset,
         data_collator=collate,
         processing_class=tokenizer,
-        callbacks=[Deadline(seconds=TRAINING_SECONDS)]
+        callbacks=[Deadline(seconds=TRAINING_SECONDS)],
     )
     result = trainer.train()
 
