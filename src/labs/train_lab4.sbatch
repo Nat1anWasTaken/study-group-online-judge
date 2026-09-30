@@ -9,6 +9,8 @@
 
 set -euo pipefail
 
+export LAB4_START_TIME=$(date +%s)
+
 module purge
 module load cuda/13.0
 
@@ -17,7 +19,7 @@ cd "$SLURM_SUBMIT_DIR"
 export WANDB_PROJECT=gpt2-training
 export TOKENIZERS_PARALLELISM=false
 
-uv run --env-file .env --no-sync accelerate launch \
+uv run --project /work/nat1andotxyz/study-group-online-judge --env-file /work/nat1andotxyz/study-group-online-judge/.env --no-sync accelerate launch \
     --multi_gpu \
     --num_processes 2 \
     --mixed_precision bf16 \
