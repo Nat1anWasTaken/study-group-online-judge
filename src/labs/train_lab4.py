@@ -225,7 +225,7 @@ class ValidationWandbCallback(TrainerCallback):
             wandb.run.summary.update(self.provenance)
             wandb.run.log_code(
                 root=str(Path(__file__).resolve().parent),
-                include_fn=lambda path: path.endswith("train_lab4.py"),
+                include_fn=lambda path: path.endswith(".py"),
             )
 
     def on_log(self, args, state, control, logs=None, **kwargs):
