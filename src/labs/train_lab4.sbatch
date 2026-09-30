@@ -17,7 +17,7 @@ cd "$SLURM_SUBMIT_DIR"
 export WANDB_PROJECT=gpt2-training
 export TOKENIZERS_PARALLELISM=false
 
-uv run --no-sync accelerate launch \
+uv run --env-file .env --no-sync accelerate launch \
     --multi_gpu \
     --num_processes 2 \
     --mixed_precision bf16 \
