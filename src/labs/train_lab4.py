@@ -16,8 +16,8 @@ from transformers import (
 
 TOKENIZER_ID = "openai-community/gpt2"
 SEQUENCE_LENGTH = 1024
-PER_DEVICE_BATCH_SIZE = 16
-GRADIENT_ACCUMULATION_STEPS = 4
+PER_DEVICE_BATCH_SIZE = 64
+GRADIENT_ACCUMULATION_STEPS = 2
 LEARNING_RATE = 6e-4
 WARMUP_RATIO = 0.05
 WEIGHT_DECAY = 0.1
@@ -29,7 +29,9 @@ ATTENTION_DROPOUT = 0.0
 SEED = 42
 MAX_STEPS = 500
 PREPARED_BLOCKS = 65_536
-WORK_DIR = Path(os.environ.get("LAB4_WORK_DIR", f"/work/{os.environ.get('USER', 'user')}/lab4"))
+WORK_DIR = Path(
+    os.environ.get("LAB4_WORK_DIR", f"/work/{os.environ.get('USER', 'user')}/lab4")
+)
 PREPARED_DATA_DIR = WORK_DIR / "c4-packed"
 OUTPUT_DIR = WORK_DIR / "gpt2-small"
 HF_REPO_ID = os.environ.get("LAB4_HF_REPO_ID", "")
@@ -44,8 +46,11 @@ def packed_examples():
 
     for batch in documents.iter(batch_size=256):
         tokenized = tokenizer(
-            batch["text"], add_special_tokens=False, truncation=False,
-            return_attention_mask=False, verbose=False,
+            batch["text"],
+            add_special_tokens=False,
+            truncation=False,
+            return_attention_mask=False,
+            verbose=False,
         )
 
         for tokens in tokenized["input_ids"]:
@@ -64,7 +69,9 @@ def packed_examples():
 def prepare():
     dataset = Dataset.from_generator(
         packed_examples,
-        features=Features({"input_ids": Sequence(Value("int32"), length=SEQUENCE_LENGTH)}),
+        features=Features(
+            {"input_ids": Sequence(Value("int32"), length=SEQUENCE_LENGTH)}
+        ),
         cache_dir=str(WORK_DIR / "prepare-cache"),
     )
 
@@ -85,6 +92,7 @@ def collate(examples):
 def train():
     if not HF_REPO_ID:
         raise ValueError("Set LAB4_HF_REPO_ID to Cerulean's actual org/model-name.")
+
     os.environ["WANDB_PROJECT"] = "gpt2-training"
     set_seed(SEED)
     torch.backends.cuda.matmul.allow_tf32 = True
@@ -93,7 +101,7 @@ def train():
     dataset = load_from_disk(str(PREPARED_DATA_DIR)).with_format("torch")
     tokenizer = AutoTokenizer.from_pretrained(str(PREPARED_DATA_DIR / "tokenizer"))
     config = GPT2Config(
-        vocab_size=50257,
+        vocab_size=50304,
         n_positions=SEQUENCE_LENGTH,
         n_ctx=SEQUENCE_LENGTH,
         n_embd=768,
@@ -139,6 +147,7 @@ def train():
             include_num_input_tokens_seen="all",
             save_strategy="no",
             eval_strategy="no",
+            torch_compile=True
         ),
         train_dataset=dataset,
         data_collator=collate,
@@ -162,7 +171,9 @@ def train():
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description='Lab 4: prepare C4 on CPU first, then train GPT-2 Small on two H200s.')
+    parser = argparse.ArgumentParser(
+        description="Lab 4: prepare C4 on CPU first, then train GPT-2 Small on two H200s."
+    )
     parser.add_argument("mode", choices=["prepare", "train"])
     args = parser.parse_args()
     if args.mode == "prepare":
