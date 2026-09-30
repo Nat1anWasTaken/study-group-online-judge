@@ -41,13 +41,10 @@ OUTPUT_DIR = WORK_DIR / "gpt2-small"
 HF_REPO_ID = os.environ.get("LAB4_HF_REPO_ID", "")
 
 
-def packed_examples():
-    tokenizer = AutoTokenizer.from_pretrained(TOKENIZER_ID)
-    documents = load_dataset("allenai/c4", "en", split="train", streaming=True)
-    documents = documents.shuffle(seed=SEED, buffer_size=10_000)
+def pack_documents(documents, tokenizer, block_count):
+    """Pack one partition, retaining partial blocks across document batches."""
     pending = []
     count = 0
-
     for batch in documents.iter(batch_size=256):
         tokenized = tokenizer(
             batch["text"],
@@ -56,7 +53,6 @@ def packed_examples():
             return_attention_mask=False,
             verbose=False,
         )
-
         for tokens in tokenized["input_ids"]:
             pending.extend(tokens)
             pending.append(tokenizer.eos_token_id)
@@ -64,29 +60,73 @@ def packed_examples():
             for start in range(0, end, SEQUENCE_LENGTH):
                 yield {"input_ids": pending[start : start + SEQUENCE_LENGTH]}
                 count += 1
-                if count == PREPARED_BLOCKS:
+                if count == block_count:
                     return
-
             pending = pending[end:]
+    raise ValueError(
+        f"Partition exhausted: expected {block_count:,} blocks, got {count:,}."
+    )
+
+
+def packed_examples(worker_ids, documents, num_workers, total_blocks, tokenizer):
+    os.environ["TOKENIZERS_PARALLELISM"] = "false"
+    torch.set_num_threads(1)
+    base, extra = divmod(total_blocks, num_workers)
+
+    for worker_id in worker_ids:
+        partition = documents.shard(num_shards=num_workers, index=worker_id)
+        partition = partition.shuffle(seed=SEED, buffer_size=10_000)
+        yield from pack_documents(partition, tokenizer, base + (worker_id < extra))
 
 
 def prepare():
+    started = time.monotonic()
+    available_cpus = os.process_cpu_count() or 1
+    allocated_cpus = int(os.environ.get("SLURM_CPUS_PER_TASK", available_cpus))
+    num_workers = min(available_cpus, allocated_cpus)
+    if num_workers < 1:
+        raise ValueError("prepare workers must be at least 1")
+
+    documents = load_dataset("allenai/c4", "en", split="train", streaming=True)
+    num_workers = min(num_workers, documents.num_shards, PREPARED_BLOCKS)
+
+    tokenizer = AutoTokenizer.from_pretrained(TOKENIZER_ID)
+    tokenizer.pad_token = tokenizer.eos_token
+    tokenizer.padding_side = "right"
+    print(
+        f"Preparing {PREPARED_BLOCKS:,} blocks with {num_workers} workers "
+        f"from {documents.num_shards} source shards.",
+        flush=True,
+    )
+
     dataset = Dataset.from_generator(
         packed_examples,
+        gen_kwargs={
+            "worker_ids": list(range(num_workers)),
+            "documents": documents,
+            "num_workers": num_workers,
+            "total_blocks": PREPARED_BLOCKS,
+            "tokenizer": tokenizer,
+        },
+        num_proc=num_workers,
         features=Features(
             {"input_ids": Sequence(Value("int32"), length=SEQUENCE_LENGTH)}
         ),
-        cache_dir=str(WORK_DIR / "prepare-cache-1b"),
+        cache_dir=str(WORK_DIR / "prepare-cache-parallel"),
     )
 
     if len(dataset) != PREPARED_BLOCKS:
         raise ValueError(f"Expected {PREPARED_BLOCKS:,} blocks, got {len(dataset):,}.")
+
     dataset.save_to_disk(str(PREPARED_DATA_DIR))
-    tokenizer = AutoTokenizer.from_pretrained(TOKENIZER_ID)
-    tokenizer.pad_token = tokenizer.eos_token
-    tokenizer.padding_side = "right"
     tokenizer.save_pretrained(str(PREPARED_DATA_DIR / "tokenizer"))
-    print(f"Prepared {len(dataset):,} blocks at {PREPARED_DATA_DIR}", flush=True)
+
+    elapsed = time.monotonic() - started
+    print(
+        f"Prepared {len(dataset):,} blocks at {PREPARED_DATA_DIR} in {elapsed:.1f}s "
+        f"({len(dataset) * SEQUENCE_LENGTH / elapsed:,.0f} tokens/s).",
+        flush=True,
+    )
 
 
 def collate(examples):
