@@ -1,0 +1,93 @@
+{
+  "wsd": [
+    {
+      "experiment": "Q",
+      "learning_rate": 0.0015,
+      "commit": "37e5ac8bcdd4be3d10b71f10ce22065035ada82f",
+      "training_job": "475846",
+      "publish_job": "475847"
+    },
+    {
+      "experiment": "Q1",
+      "learning_rate": 0.00125,
+      "branch": "lab4/q1",
+      "worktree": "/work/nat1andotxyz/lab4-q1",
+      "commit": "db231afa884c764df7a930bcfd4ba5f5ff87b596",
+      "training_job": "475898",
+      "publish_job": "475899"
+    },
+    {
+      "experiment": "Q2",
+      "learning_rate": 0.002,
+      "branch": "lab4/q2",
+      "worktree": "/work/nat1andotxyz/lab4-q2",
+      "commit": "611ca8aa024b36fbea676b89ac98bbfac44ee1f1",
+      "training_job": "475900",
+      "publish_job": "475901"
+    },
+    {
+      "experiment": "Q3",
+      "learning_rate": 0.003,
+      "branch": "lab4/q3",
+      "worktree": "/work/nat1andotxyz/lab4-q3",
+      "commit": "8c4c6237e33c28b10db63d2a1b18a34688a4c965",
+      "training_job": "475902",
+      "publish_job": "475903"
+    },
+    {
+      "experiment": "Q4",
+      "learning_rate": 0.004,
+      "branch": "lab4/q4",
+      "worktree": "/work/nat1andotxyz/lab4-q4",
+      "commit": "5e95d38dd24245f84b727232906a7fc390e93550",
+      "training_job": "475904",
+      "publish_job": "475905"
+    }
+  ],
+  "cosine": [
+    {
+      "experiment": "R1",
+      "learning_rate": 0.0015,
+      "control": "Q",
+      "control_commit": "37e5ac8bcdd4be3d10b71f10ce22065035ada82f",
+      "branch": "lab4/r1",
+      "worktree": "/work/nat1andotxyz/lab4-r1",
+      "commit": "e6c61f08a0e3007e11665335acb54360c26c6024",
+      "training_job": "475974",
+      "publish_job": "475975"
+    },
+    {
+      "experiment": "R2",
+      "learning_rate": 0.002,
+      "control": "Q2",
+      "control_commit": "611ca8aa024b36fbea676b89ac98bbfac44ee1f1",
+      "branch": "lab4/r2",
+      "worktree": "/work/nat1andotxyz/lab4-r2",
+      "commit": "475f8e3dd34ba93e6e73acd8882cb4fc2bc992a3",
+      "training_job": "475976",
+      "publish_job": "475977"
+    },
+    {
+      "experiment": "R3",
+      "learning_rate": 0.003,
+      "control": "Q3",
+      "control_commit": "8c4c6237e33c28b10db63d2a1b18a34688a4c965",
+      "branch": "lab4/r3",
+      "worktree": "/work/nat1andotxyz/lab4-r3",
+      "commit": "69c977a50887fc8ec881444c8707a75a6bcb540f",
+      "training_job": "475978",
+      "publish_job": "475980"
+    },
+    {
+      "experiment": "R4",
+      "learning_rate": 0.004,
+      "control": "Q4",
+      "control_commit": "5e95d38dd24245f84b727232906a7fc390e93550",
+      "branch": "lab4/r4",
+      "worktree": "/work/nat1andotxyz/lab4-r4",
+      "commit": "d80e9e8b494e8f5079ae388906ce3fbf1ad0de7c",
+      "training_job": "475981",
+      "publish_job": "475982"
+    }
+  ]
+}

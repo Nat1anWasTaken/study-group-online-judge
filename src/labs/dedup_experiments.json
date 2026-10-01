@@ -1,0 +1,38 @@
+[
+  {
+    "experiment": "S1",
+    "method": "control",
+    "schedule": "wsd",
+    "worktree": "/work/nat1andotxyz/lab4-s1"
+  },
+  {
+    "experiment": "S2",
+    "method": "exact",
+    "schedule": "wsd",
+    "worktree": "/work/nat1andotxyz/lab4-s2"
+  },
+  {
+    "experiment": "S3",
+    "method": "minhash",
+    "schedule": "wsd",
+    "worktree": "/work/nat1andotxyz/lab4-s3"
+  },
+  {
+    "experiment": "T1",
+    "method": "control",
+    "schedule": "cosine",
+    "worktree": "/work/nat1andotxyz/lab4-t1"
+  },
+  {
+    "experiment": "T2",
+    "method": "exact",
+    "schedule": "cosine",
+    "worktree": "/work/nat1andotxyz/lab4-t2"
+  },
+  {
+    "experiment": "T3",
+    "method": "minhash",
+    "schedule": "cosine",
+    "worktree": "/work/nat1andotxyz/lab4-t3"
+  }
+]
