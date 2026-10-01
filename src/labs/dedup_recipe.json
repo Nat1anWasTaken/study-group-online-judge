@@ -1,0 +1,75 @@
+{
+  "criterion": "minimum final dev perplexity; same 2048-document validation",
+  "winner": {
+    "experiment": "Q3",
+    "learning_rate": 0.003,
+    "branch": "lab4/q3",
+    "worktree": "/work/nat1andotxyz/lab4-q3",
+    "commit": "8c4c6237e33c28b10db63d2a1b18a34688a4c965",
+    "training_job": "475902",
+    "publish_job": "475903",
+    "run_id": "d5ujhmt5",
+    "final_eval_perplexity": 28.82000065634137
+  },
+  "candidates": [
+    {
+      "experiment": "Q",
+      "learning_rate": 0.0015,
+      "commit": "37e5ac8bcdd4be3d10b71f10ce22065035ada82f",
+      "training_job": "475846",
+      "publish_job": "475847",
+      "run_id": "44pe528x",
+      "final_eval_perplexity": 28.92785414265264
+    },
+    {
+      "experiment": "Q1",
+      "learning_rate": 0.00125,
+      "branch": "lab4/q1",
+      "worktree": "/work/nat1andotxyz/lab4-q1",
+      "commit": "db231afa884c764df7a930bcfd4ba5f5ff87b596",
+      "training_job": "475898",
+      "publish_job": "475899",
+      "run_id": "benclz83",
+      "final_eval_perplexity": 29.01189002576854
+    },
+    {
+      "experiment": "Q2",
+      "learning_rate": 0.002,
+      "branch": "lab4/q2",
+      "worktree": "/work/nat1andotxyz/lab4-q2",
+      "commit": "611ca8aa024b36fbea676b89ac98bbfac44ee1f1",
+      "training_job": "475900",
+      "publish_job": "475901",
+      "run_id": "uuxrihhq",
+      "final_eval_perplexity": 29.006511512006817
+    },
+    {
+      "experiment": "Q3",
+      "learning_rate": 0.003,
+      "branch": "lab4/q3",
+      "worktree": "/work/nat1andotxyz/lab4-q3",
+      "commit": "8c4c6237e33c28b10db63d2a1b18a34688a4c965",
+      "training_job": "475902",
+      "publish_job": "475903",
+      "run_id": "d5ujhmt5",
+      "final_eval_perplexity": 28.82000065634137
+    },
+    {
+      "experiment": "Q4",
+      "learning_rate": 0.004,
+      "branch": "lab4/q4",
+      "worktree": "/work/nat1andotxyz/lab4-q4",
+      "commit": "5e95d38dd24245f84b727232906a7fc390e93550",
+      "training_job": "475904",
+      "publish_job": "475905",
+      "run_id": "53hg9r71",
+      "final_eval_perplexity": 29.033243328012315
+    }
+  ],
+  "experiment": "S3",
+  "method": "minhash",
+  "schedule": "wsd",
+  "preparation_commit": "ceb32c8a46addbcca903e74548a2019cba95418b",
+  "preparation_job": "476113",
+  "launch_job": "476115"
+}
