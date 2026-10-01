@@ -8,6 +8,7 @@ from pathlib import Path
 import torch
 import torch.distributed
 from datasets import load_from_disk
+from muon_lab4 import MuonAdamW
 from transformers import (
     AutoTokenizer,
     GPT2Config,
@@ -21,15 +22,14 @@ from transformers import (
 
 import wandb
 
-from muon_lab4 import MuonAdamW
-
 SEQUENCE_LENGTH = 1024
 PER_DEVICE_BATCH_SIZE = 64
 GRADIENT_ACCUMULATION_STEPS = 1
-EXPERIMENT = "R4"
+EXPERIMENT = "U3"
 JOB_SECONDS = 30 * 60
 FINALIZE_RESERVE_SECONDS = 3 * 60
-LEARNING_RATE = 4e-3
+MUON_LEARNING_RATE = 4e-3
+ADAMW_LEARNING_RATE = 2e-3
 WARMUP_RATIO = 0.05
 WEIGHT_DECAY = 0.1
 MAX_GRAD_NORM = 1.0
@@ -98,7 +98,7 @@ class TimeCallback(TrainerCallback):
             scale = 0.5 * (1.0 + math.cos(math.pi * decay_progress))
         self.trainer.lr_scale = scale
         for group in optimizer.param_groups:
-            group["lr"] = LEARNING_RATE * scale
+            group["lr"] = group["initial_lr"] * scale
 
     def on_step_end(self, args, state, control, **kwargs):
         self.update_progress(args)
@@ -127,6 +127,11 @@ def collate(examples):
 
 
 class TimedTrainer(Trainer):
+    def log(self, logs, start_time=None):
+        logs["muon_learning_rate"] = self.optimizer.param_groups[0]["lr"]
+        logs["adamw_learning_rate"] = self.optimizer.param_groups[-1]["lr"]
+        super().log(logs, start_time)
+
     def create_optimizer(self):
         if self.optimizer is None:
             decay_names = self.get_decay_parameter_names(self.model)
@@ -145,7 +150,8 @@ class TimedTrainer(Trainer):
             if len(qkv) != 12:
                 raise ValueError(f"Expected 12 fused QKV weights, found {len(qkv)}")
             self.optimizer = MuonAdamW(
-                matrices, decay, no_decay, LEARNING_RATE, WEIGHT_DECAY, ADAM_BETAS, qkv
+                matrices, decay, no_decay, MUON_LEARNING_RATE,
+                ADAMW_LEARNING_RATE, WEIGHT_DECAY, ADAM_BETAS, qkv
             )
         return self.optimizer
 
@@ -176,8 +182,12 @@ def train():
     hf_repo_id = f"{HF_REPO_ID}-{EXPERIMENT.lower()}-{provenance['git_commit'][:8]}"
     provenance.update(
         experiment=EXPERIMENT,
-        baseline_commit="3f4c5e1",
-        baseline_experiment="O-final",
+        baseline_commit="d80e9e8b494e8f5079ae388906ce3fbf1ad0de7c",
+        baseline_experiment="R4",
+        baseline_dev_perplexity=27.906903049033986,
+        baseline_judge_perplexity=28.04798,
+        batch_experiment="U",
+        batch_control_experiment="U4",
         optimizer_source_sha256=hashlib.sha256(
             Path(__file__).with_name("muon_lab4.py").read_bytes()
         ).hexdigest(),
@@ -190,11 +200,10 @@ def train():
         training_blocks=len(dataset),
         schedule="warmup_5_cosine_95",
         cosine_min_lr_ratio=0.0,
-        schedule_control_experiment="Q4",
-        schedule_control_commit="5e95d38dd24245f84b727232906a7fc390e93550",
-        schedule_reference_run="cerulean-labs/gpt2-training/73376194",
-        muon_learning_rate=LEARNING_RATE,
-        adamw_learning_rate=LEARNING_RATE,
+        learning_rate_search="muon_x_adamw",
+        muon_learning_rate=MUON_LEARNING_RATE,
+        adamw_learning_rate=ADAMW_LEARNING_RATE,
+        muon_to_adamw_lr_ratio=MUON_LEARNING_RATE / ADAMW_LEARNING_RATE,
         training_seed=SEED,
         data_seed=SEED,
         optimizer_recipe="split_qkv_muon_hidden_adamw_rest",
@@ -231,7 +240,7 @@ def train():
             per_device_train_batch_size=PER_DEVICE_BATCH_SIZE,
             gradient_accumulation_steps=GRADIENT_ACCUMULATION_STEPS,
             max_steps=MAX_STEPS,
-            learning_rate=LEARNING_RATE,
+            learning_rate=MUON_LEARNING_RATE,
             warmup_ratio=WARMUP_RATIO,
             lr_scheduler_type="cosine",
             optim="adamw_torch_fused",
@@ -288,17 +297,17 @@ def train():
     trainer.log_metrics("train", result.metrics)
     trainer.log(result.metrics)
     if trainer.is_world_process_zero():
-        wandb.run.summary.update(dict(
-            startup_seconds=timing.started - allocation_started,
-            train_loop_seconds=training_finished - timing.started,
-            save_seconds=save_seconds,
-            allocation_elapsed_seconds=time.time() - allocation_started,
-            final_train_step=trainer.state.global_step,
-            training_completed=True,
-            evaluation_completed=False,
-            hf_upload_completed=False,
-            hf_model_id=hf_repo_id,
-        ))
+        wandb.run.summary.update({
+            "startup_seconds": timing.started - allocation_started,
+            "train_loop_seconds": training_finished - timing.started,
+            "save_seconds": save_seconds,
+            "allocation_elapsed_seconds": time.time() - allocation_started,
+            "final_train_step": trainer.state.global_step,
+            "training_completed": True,
+            "evaluation_completed": False,
+            "hf_upload_completed": False,
+            "hf_model_id": hf_repo_id,
+        })
         print(
             f"Saved final model at {output_dir}; evaluate and publish separately to {hf_repo_id}",
             flush=True,
