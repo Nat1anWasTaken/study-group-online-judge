@@ -9,6 +9,10 @@
 #SBATCH --error=logs/lab4-publish-%j.err
 
 set -euo pipefail
+
+module purge
+module load cuda/13.0
+
 LAB4_SOURCE_DIR="$PWD"
 export WANDB_DIR="$LAB4_SOURCE_DIR"
 export OMP_NUM_THREADS=4
