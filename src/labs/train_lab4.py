@@ -1,6 +1,4 @@
 import hashlib
-import json
-import math
 import os
 import subprocess
 import time
@@ -8,7 +6,6 @@ from pathlib import Path
 
 import torch
 import torch.distributed
-import torch.nn.functional as F
 from datasets import load_from_disk
 from transformers import (
     AutoTokenizer,
@@ -25,12 +22,12 @@ import wandb
 
 from muon_lab4 import MuonAdamW
 
-TOKENIZER_ID = "openai-community/gpt2"
 SEQUENCE_LENGTH = 1024
 PER_DEVICE_BATCH_SIZE = 64
 GRADIENT_ACCUMULATION_STEPS = 1
 EXPERIMENT = "H"
-TRAINING_SECONDS = 25 * 60
+JOB_SECONDS = 30 * 60
+FINALIZE_RESERVE_SECONDS = 90
 LEARNING_RATE = 6e-4
 WARMUP_RATIO = 0.05
 WEIGHT_DECAY = 0.1
@@ -41,37 +38,11 @@ EMBEDDING_DROPOUT = 0.0
 ATTENTION_DROPOUT = 0.0
 SEED = 42
 MAX_STEPS = 100_000
-OJ_DOCUMENTS = 100_000
-EVAL_DOCUMENTS = 2_048
-EVAL_BATCH_SIZE = 8
 WORK_DIR = Path(
     os.environ.get("LAB4_WORK_DIR", f"/work/{os.environ.get('USER', 'user')}/lab4")
 )
 PREPARED_DATA_DIR = WORK_DIR / "c4-packed"
-PREPARED_EVAL_DIR = WORK_DIR / "c4-dev"
 HF_REPO_ID = os.environ.get("LAB4_HF_REPO_ID", "")
-
-
-def validation_hash(dataset):
-    return hashlib.sha256(json.dumps(list(dataset["input_ids"])).encode()).hexdigest()
-
-
-def load_validation():
-    dataset = load_from_disk(str(PREPARED_EVAL_DIR))
-    metadata = json.loads((PREPARED_EVAL_DIR / "validation.json").read_text())
-    expected = {
-        "seed": SEED,
-        "start": OJ_DOCUMENTS,
-        "documents": EVAL_DOCUMENTS,
-        "max_length": SEQUENCE_LENGTH,
-        "tokenizer": TOKENIZER_ID,
-        "token_ids_sha256": validation_hash(dataset),
-    }
-    if len(dataset) != EVAL_DOCUMENTS or any(
-        metadata.get(k) != v for k, v in expected.items()
-    ):
-        raise ValueError("Dev cache changed; run prepare_lab4.py again.")
-    return dataset, metadata
 
 
 def code_revision(directory=None):
@@ -91,71 +62,18 @@ def code_revision(directory=None):
     }
 
 
-@torch.inference_mode()
-def validation_totals(
-    model, dataset, tokenizer, device, batch_size, rank=0, world_size=1
-):
-    totals = torch.zeros(4, dtype=torch.float64, device=device)
-    indices = list(range(rank, len(dataset), world_size))
-    was_training = model.training
-    forward = getattr(model, "_original_forward", model.forward)
-    model.eval()
-    try:
-        for start in range(0, len(indices), batch_size):
-            rows = [
-                dataset[i]["input_ids"] for i in indices[start : start + batch_size]
-            ]
-            valid = [row for row in rows if len(row) > 1]
-            totals[3] += len(rows) - len(valid)
-            if not valid:
-                continue
-            inputs = tokenizer.pad(
-                {"input_ids": valid}, padding=True, return_tensors="pt"
-            )
-            inputs = {key: value.to(device) for key, value in inputs.items()}
-            logits = forward(**inputs).logits[:, :-1, :].float().contiguous()
-            labels = inputs["input_ids"][:, 1:].contiguous()
-            mask = inputs["attention_mask"][:, 1:].bool()
-            losses = (
-                F.cross_entropy(
-                    logits.view(-1, logits.shape[-1]),
-                    labels.view(-1),
-                    reduction="none",
-                )
-                .view_as(labels)
-                .masked_fill(~mask, 0)
-            )
-            totals[0] += losses.sum(dim=1).double().sum()
-            totals[1] += mask.sum()
-            totals[2] += len(valid)
-    finally:
-        model.train(was_training)
-    return totals
-
-
-def validation_metrics(totals):
-    loss, tokens, documents, skipped = totals.tolist()
-    if tokens <= 0 or not math.isfinite(loss) or loss / tokens >= 709:
-        raise ValueError("Invalid validation loss or token count")
-    return {
-        "loss": loss / tokens,
-        "perplexity": math.exp(loss / tokens),
-        "tokens": int(tokens),
-        "documents": int(documents),
-        "skipped_documents": int(skipped),
-    }
-
-
-class ValidationCallback(TrainerCallback):
+class TimeCallback(TrainerCallback):
     def __init__(self, trainer):
         self.trainer = trainer
-        self.last_eval_step = None
-        self.next_eval = 0.25
         self.progress = 0.0
 
     def on_train_begin(self, args, state, control, **kwargs):
         self.started = time.time()
-        self.deadline = float(os.environ["LAB4_START_TIME"]) + TRAINING_SECONDS
+        self.deadline = (
+            float(os.environ["LAB4_START_TIME"])
+            + JOB_SECONDS
+            - FINALIZE_RESERVE_SECONDS
+        )
         self.duration = self.deadline - self.started
         if self.duration <= 0:
             raise RuntimeError("Startup consumed the training budget")
@@ -186,69 +104,20 @@ class ValidationCallback(TrainerCallback):
         self.update_progress(args)
         if self.progress >= 1.0:
             control.should_training_stop = True
-        elif self.progress >= self.next_eval and self.next_eval <= 0.75:
-            self.evaluate()
-            self.next_eval += 0.25
-
-    def evaluate(self):
-        trainer = self.trainer
-        started = time.monotonic()
-        model = trainer.accelerator.unwrap_model(
-            trainer.model_wrapped, keep_torch_compile=False
-        )
-        totals = validation_totals(
-            model,
-            trainer.eval_dataset,
-            trainer.processing_class,
-            trainer.args.device,
-            trainer.args.per_device_eval_batch_size,
-            trainer.accelerator.process_index,
-            trainer.accelerator.num_processes,
-        )
-        if torch.distributed.is_initialized():
-            torch.distributed.all_reduce(totals)
-        metrics = validation_metrics(totals)
-        metrics["runtime"] = time.monotonic() - started
-        metrics = {f"eval_{key}": value for key, value in metrics.items()}
-        self.last_eval_step = trainer.state.global_step
-        trainer.log(metrics)
-        return metrics
 
 
-class ValidationWandbCallback(TrainerCallback):
-    def __init__(self, provenance, metadata):
+class ProvenanceCallback(TrainerCallback):
+    def __init__(self, provenance):
         self.provenance = provenance
-        self.metadata = metadata
-        self.best = math.inf
 
     def on_train_begin(self, args, state, control, **kwargs):
         if state.is_world_process_zero and wandb.run is not None:
-            wandb.config.update({**self.provenance, "validation": self.metadata})
+            wandb.config.update(self.provenance)
             wandb.run.summary.update(self.provenance)
             wandb.run.log_code(
                 root=str(Path(__file__).resolve().parent),
                 include_fn=lambda path: path.endswith(".py"),
             )
-
-    def on_log(self, args, state, control, logs=None, **kwargs):
-        if (
-            not state.is_world_process_zero
-            or wandb.run is None
-            or "eval_perplexity" not in (logs or {})
-        ):
-            return
-        summary = {
-            f"last_{key}": value
-            for key, value in logs.items()
-            if key.startswith("eval_")
-        }
-        summary["last_eval_step"] = state.global_step
-        if logs["eval_perplexity"] < self.best:
-            self.best = logs["eval_perplexity"]
-            summary.update(
-                best_eval_perplexity=self.best, best_eval_step=state.global_step
-            )
-        wandb.run.summary.update(summary)
 
 
 def collate(examples):
@@ -269,8 +138,9 @@ class TimedTrainer(Trainer):
                     decay.append(parameter)
                 else:
                     no_decay.append(parameter)
-            self.optimizer = MuonAdamW(matrices, decay, no_decay,
-                                       LEARNING_RATE, WEIGHT_DECAY, ADAM_BETAS)
+            self.optimizer = MuonAdamW(
+                matrices, decay, no_decay, LEARNING_RATE, WEIGHT_DECAY, ADAM_BETAS
+            )
         return self.optimizer
 
     def create_scheduler(self, num_training_steps, optimizer=None):
@@ -294,7 +164,6 @@ def train():
     dataset = load_from_disk(str(PREPARED_DATA_DIR)).with_format("torch")
     print(f"Training on {len(dataset):,} shared blocks.", flush=True)
     tokenizer = AutoTokenizer.from_pretrained(str(PREPARED_DATA_DIR / "tokenizer"))
-    eval_dataset, eval_metadata = load_validation()
     provenance = code_revision()
     run_name = f"lab4-{EXPERIMENT}-{provenance['git_commit'][:8]}-{os.environ.get('SLURM_JOB_ID', 'local')}"
     output_dir = WORK_DIR / "runs" / run_name
@@ -303,7 +172,9 @@ def train():
         experiment=EXPERIMENT,
         slurm_job_id=os.environ.get("SLURM_JOB_ID"),
         hf_model_id=hf_repo_id,
-        training_budget_seconds=TRAINING_SECONDS,
+        job_budget_seconds=JOB_SECONDS,
+        training_budget_seconds=JOB_SECONDS - FINALIZE_RESERVE_SECONDS,
+        finalize_reserve_seconds=FINALIZE_RESERVE_SECONDS,
         training_dataset_fingerprint=dataset._fingerprint,
         training_blocks=len(dataset),
         schedule="wsd_5_75_20",
@@ -359,57 +230,57 @@ def train():
             include_num_input_tokens_seen="all",
             save_strategy="no",
             eval_strategy="no",
-            per_device_eval_batch_size=EVAL_BATCH_SIZE,
             torch_compile=True,
         ),
         train_dataset=dataset,
-        eval_dataset=eval_dataset,
         data_collator=collate,
         processing_class=tokenizer,
-        callbacks=[
-            ValidationWandbCallback(provenance, eval_metadata),
-        ],
+        callbacks=[ProvenanceCallback(provenance)],
     )
-    validation = ValidationCallback(trainer)
-    trainer.add_callback(validation)
+    timing = TimeCallback(trainer)
+    trainer.add_callback(timing)
     allocation_started = float(os.environ["LAB4_START_TIME"])
     result = trainer.train()
-    if validation.last_eval_step != trainer.state.global_step:
-        validation.evaluate()
+    training_finished = time.time()
 
     result.metrics["train_steps_per_second"] = (
         trainer.state.global_step / result.metrics["train_runtime"]
     )
     result.metrics["train_samples_per_second"] = (
-        trainer.state.global_step * PER_DEVICE_BATCH_SIZE
-        * GRADIENT_ACCUMULATION_STEPS * trainer.accelerator.num_processes
+        trainer.state.global_step
+        * PER_DEVICE_BATCH_SIZE
+        * GRADIENT_ACCUMULATION_STEPS
+        * trainer.accelerator.num_processes
         / result.metrics["train_runtime"]
     )
     result.metrics["train_tokens_per_second"] = (
         trainer.state.num_input_tokens_seen / result.metrics["train_runtime"]
     )
 
+    model.config.use_cache = True
+    save_started = time.monotonic()
+    trainer.save_model()
+    trainer.accelerator.wait_for_everyone()
+    save_seconds = time.monotonic() - save_started
+
     trainer.log_metrics("train", result.metrics)
     trainer.log(result.metrics)
-    model.config.use_cache = True
-    trainer.save_model()
-
     if trainer.is_world_process_zero():
         wandb.run.summary.update(dict(
-            final_eval_perplexity=wandb.run.summary.get("last_eval_perplexity"),
-            final_eval_loss=wandb.run.summary.get("last_eval_loss"),
-            hf_upload_completed=False,
-        ))
-        print(f"Final dev perplexity: {wandb.run.summary['last_eval_perplexity']}", flush=True)
-        wandb.run.summary.update(dict(
-            final_eval_perplexity=wandb.run.summary.get("last_eval_perplexity"),
-            final_eval_loss=wandb.run.summary.get("last_eval_loss"),
+            startup_seconds=timing.started - allocation_started,
+            train_loop_seconds=training_finished - timing.started,
+            save_seconds=save_seconds,
             allocation_elapsed_seconds=time.time() - allocation_started,
-            hf_upload_completed=False,
+            final_train_step=trainer.state.global_step,
             training_completed=True,
+            evaluation_completed=False,
+            hf_upload_completed=False,
             hf_model_id=hf_repo_id,
         ))
-        print(f"Saved final model at {output_dir}; publish separately to {hf_repo_id}", flush=True)
+        print(
+            f"Saved final model at {output_dir}; evaluate and publish separately to {hf_repo_id}",
+            flush=True,
+        )
         wandb.finish()
     trainer.accelerator.wait_for_everyone()
     if torch.distributed.is_initialized():
