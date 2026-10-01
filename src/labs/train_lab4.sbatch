@@ -15,6 +15,7 @@ module purge
 module load cuda/13.0
 
 LAB4_SOURCE_DIR="$PWD"
+export PYTHONPATH="$LAB4_SOURCE_DIR/.cache/cce${PYTHONPATH:+:$PYTHONPATH}"
 
 export WANDB_PROJECT=gpt2-training
 export TOKENIZERS_PARALLELISM=false

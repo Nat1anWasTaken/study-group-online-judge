@@ -4,6 +4,9 @@ set -euo pipefail
 LAB4_SOURCE_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$LAB4_SOURCE_DIR"
 mkdir -p logs
+uv pip install --python /work/nat1andotxyz/study-group-online-judge/.venv/bin/python \
+    --target "$LAB4_SOURCE_DIR/.cache/cce" --no-deps \
+    -r src/labs/cce_lab4.requirements.txt
 sbatch_options=(--exclude="${LAB4_EXCLUDE_NODES:-25a-hgpn003}")
 
 training_job=$(sbatch "${sbatch_options[@]}" --parsable --chdir="$LAB4_SOURCE_DIR" src/labs/train_lab4.sbatch)

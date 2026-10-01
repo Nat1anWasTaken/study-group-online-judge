@@ -22,11 +22,12 @@ from transformers import (
 import wandb
 
 from muon_lab4 import MuonAdamW
+from cce_lab4 import CCE_IMPLEMENTATION, CCE_REVISION, use_cce
 
 SEQUENCE_LENGTH = 1024
 PER_DEVICE_BATCH_SIZE = 64
 GRADIENT_ACCUMULATION_STEPS = 1
-EXPERIMENT = "O"
+EXPERIMENT = "P"
 JOB_SECONDS = 30 * 60
 FINALIZE_RESERVE_SECONDS = 3 * 60
 LEARNING_RATE = 1e-3
@@ -183,7 +184,10 @@ def train():
     hf_repo_id = f"{HF_REPO_ID}-{EXPERIMENT.lower()}-{provenance['git_commit'][:8]}"
     provenance.update(
         experiment=EXPERIMENT,
-        baseline_commit="2c49ce6",
+        baseline_commit="3f4c5e1",
+        baseline_experiment="O-final",
+        loss_implementation=CCE_IMPLEMENTATION,
+        cce_revision=CCE_REVISION,
         optimizer_source_sha256=hashlib.sha256(
             Path(__file__).with_name("muon_lab4.py").read_bytes()
         ).hexdigest(),
@@ -226,7 +230,7 @@ def train():
         use_cache=False,
     )
 
-    model = GPT2LMHeadModel(config)
+    model = use_cce(GPT2LMHeadModel(config))
     trainer = TimedTrainer(
         model=model,
         args=TrainingArguments(

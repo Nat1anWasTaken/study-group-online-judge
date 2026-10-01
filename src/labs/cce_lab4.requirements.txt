@@ -1,0 +1,1 @@
+cut-cross-entropy @ git+https://github.com/apple-aiml-research/ml-cross-entropy.git@3de376c106a1916bc5e1b619f9c77c87a461ee1c
