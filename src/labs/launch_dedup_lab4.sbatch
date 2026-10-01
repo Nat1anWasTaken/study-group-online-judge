@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 #SBATCH --job-name=lab4-s-launch
 #SBATCH --partition=dev
+#SBATCH --gpus-per-node=1
 #SBATCH --cpus-per-task=1
 #SBATCH --mem=2G
 #SBATCH --time=00:15:00

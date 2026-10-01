@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 #SBATCH --job-name=lab4-s-data
 #SBATCH --partition=dev
-#SBATCH --cpus-per-task=32
+#SBATCH --gpus-per-node=1
+#SBATCH --cpus-per-task=12
 #SBATCH --mem=128G
 #SBATCH --time=04:00:00
 #SBATCH --output=logs/dedup-prepare-%j.out
