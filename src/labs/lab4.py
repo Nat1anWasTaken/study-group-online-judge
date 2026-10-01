@@ -3,4 +3,4 @@
 Replace this with your model's Hugging Face ID for a real submission.
 """
 
-eval_model_id = "Nat1an/cerulean-lab4-h-6a29c74a"
+eval_model_id = "Nat1an/cerulean-lab4-k1-964f796a"
