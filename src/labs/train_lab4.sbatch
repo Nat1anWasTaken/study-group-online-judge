@@ -8,6 +8,7 @@
 #SBATCH --partition=dev
 
 set -euo pipefail
+unset WANDB_SERVICE
 
 export LAB4_START_TIME=$(date +%s)
 
