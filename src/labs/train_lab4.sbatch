@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-#SBATCH --job-name=lab4-train
+#SBATCH --job-name=lab4-u11-train
 #SBATCH --gres=gpu:2
 #SBATCH --time=00:30:00
 #SBATCH --cpus-per-task=24
@@ -8,6 +8,7 @@
 #SBATCH --partition=dev
 
 set -euo pipefail
+unset WANDB_SERVICE
 
 export LAB4_START_TIME=$(date +%s)
 
