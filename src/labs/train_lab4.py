@@ -1,4 +1,5 @@
 import hashlib
+import math
 import os
 import subprocess
 import time
@@ -25,10 +26,11 @@ from muon_lab4 import MuonAdamW
 SEQUENCE_LENGTH = 1024
 PER_DEVICE_BATCH_SIZE = 64
 GRADIENT_ACCUMULATION_STEPS = 1
-EXPERIMENT = "H"
+EXPERIMENT = "K0"
 JOB_SECONDS = 30 * 60
 FINALIZE_RESERVE_SECONDS = 90
 LEARNING_RATE = 6e-4
+COOLDOWN_SHAPE = "linear"
 WARMUP_RATIO = 0.05
 WEIGHT_DECAY = 0.1
 MAX_GRAD_NORM = 1.0
@@ -95,7 +97,12 @@ class TimeCallback(TrainerCallback):
         elif self.progress < 0.8:
             scale = 1.0
         else:
-            scale = (1.0 - self.progress) / 0.2
+            cooldown_progress = (self.progress - 0.8) / 0.2
+            scale = (
+                1.0 - math.sqrt(cooldown_progress)
+                if COOLDOWN_SHAPE == "sqrt"
+                else 1.0 - cooldown_progress
+            )
         self.trainer.lr_scale = scale
         for group in optimizer.param_groups:
             group["lr"] = LEARNING_RATE * scale
@@ -177,7 +184,12 @@ def train():
         finalize_reserve_seconds=FINALIZE_RESERVE_SECONDS,
         training_dataset_fingerprint=dataset._fingerprint,
         training_blocks=len(dataset),
-        schedule="wsd_5_75_20",
+        schedule=f"wsd_5_75_20_{COOLDOWN_SHAPE}",
+        cooldown_shape=COOLDOWN_SHAPE,
+        muon_learning_rate=LEARNING_RATE,
+        adamw_learning_rate=LEARNING_RATE,
+        training_seed=SEED,
+        data_seed=SEED,
         optimizer_recipe="muon_hidden_adamw_rest",
         muon_momentum=0.95,
         muon_ns_steps=5,
