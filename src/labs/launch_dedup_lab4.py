@@ -59,6 +59,7 @@ def launch():
     experiments = json.loads((SOURCE / 'dedup_experiments.json').read_text())
     submissions = []
     environment = dict(os.environ, SBATCH_ACCOUNT='ACD115198')
+    environment.pop('WANDB_SERVICE', None)
     for experiment in experiments:
         path = Path(experiment['worktree'])
         if git(path, 'status', '--porcelain', '--untracked-files=no'):
