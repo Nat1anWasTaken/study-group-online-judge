@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-#SBATCH --job-name=lab4-publish
+#SBATCH --job-name=lab4-u8-publish
 #SBATCH --partition=dev
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=4
@@ -9,6 +9,7 @@
 #SBATCH --error=logs/lab4-publish-%j.err
 
 set -euo pipefail
+unset WANDB_SERVICE
 
 module purge
 module load cuda/13.0
