@@ -26,10 +26,10 @@ from muon_lab4 import MuonAdamW
 SEQUENCE_LENGTH = 1024
 PER_DEVICE_BATCH_SIZE = 64
 GRADIENT_ACCUMULATION_STEPS = 1
-EXPERIMENT = "O"
+EXPERIMENT = "Q"
 JOB_SECONDS = 30 * 60
 FINALIZE_RESERVE_SECONDS = 3 * 60
-LEARNING_RATE = 1e-3
+LEARNING_RATE = 1.5e-3
 COOLDOWN_SHAPE = "linear"
 WARMUP_RATIO = 0.05
 WEIGHT_DECAY = 0.1
@@ -183,7 +183,8 @@ def train():
     hf_repo_id = f"{HF_REPO_ID}-{EXPERIMENT.lower()}-{provenance['git_commit'][:8]}"
     provenance.update(
         experiment=EXPERIMENT,
-        baseline_commit="2c49ce6",
+        baseline_commit="3f4c5e1",
+        baseline_experiment="O-final",
         optimizer_source_sha256=hashlib.sha256(
             Path(__file__).with_name("muon_lab4.py").read_bytes()
         ).hexdigest(),
