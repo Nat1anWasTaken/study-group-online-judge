@@ -1,4 +1,5 @@
 import hashlib
+import json
 import math
 import os
 import subprocess
@@ -26,7 +27,7 @@ from muon_lab4 import MuonAdamW
 SEQUENCE_LENGTH = 1024
 PER_DEVICE_BATCH_SIZE = 64
 GRADIENT_ACCUMULATION_STEPS = 1
-EXPERIMENT = "R1"
+EXPERIMENT = "T3"
 JOB_SECONDS = 30 * 60
 FINALIZE_RESERVE_SECONDS = 3 * 60
 LEARNING_RATE = 1.5e-3
@@ -42,7 +43,7 @@ MAX_STEPS = 100_000
 WORK_DIR = Path(
     os.environ.get("LAB4_WORK_DIR", f"/work/{os.environ.get('USER', 'user')}/lab4")
 )
-PREPARED_DATA_DIR = WORK_DIR / "c4-packed"
+PREPARED_DATA_DIR = WORK_DIR / "dedup-s/minhash"
 HF_REPO_ID = os.environ.get("LAB4_HF_REPO_ID", "")
 
 
@@ -171,6 +172,10 @@ def train():
     print(f"Training on {len(dataset):,} shared blocks.", flush=True)
     tokenizer = AutoTokenizer.from_pretrained(str(PREPARED_DATA_DIR / "tokenizer"))
     provenance = code_revision()
+    provenance.update(
+        dedup=json.loads((PREPARED_DATA_DIR / "dedup.json").read_text()),
+        recipe_selection=json.loads(Path(__file__).with_name("dedup_recipe.json").read_text()),
+    )
     run_name = f"lab4-{EXPERIMENT}-{provenance['git_commit'][:8]}-{os.environ.get('SLURM_JOB_ID', 'local')}"
     output_dir = WORK_DIR / "runs" / run_name
     hf_repo_id = f"{HF_REPO_ID}-{EXPERIMENT.lower()}-{provenance['git_commit'][:8]}"
