@@ -9,6 +9,7 @@
 #SBATCH --error=logs/lab4-publish-%j.err
 
 set -euo pipefail
+unset WANDB_SERVICE
 
 module purge
 module load cuda/13.0
