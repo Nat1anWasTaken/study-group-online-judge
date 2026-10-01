@@ -26,7 +26,7 @@ from muon_lab4 import MuonAdamW
 SEQUENCE_LENGTH = 1024
 PER_DEVICE_BATCH_SIZE = 64
 GRADIENT_ACCUMULATION_STEPS = 1
-EXPERIMENT = "K1"
+EXPERIMENT = "L"
 JOB_SECONDS = 30 * 60
 FINALIZE_RESERVE_SECONDS = 90
 LEARNING_RATE = 1e-3
@@ -190,9 +190,15 @@ def train():
         adamw_learning_rate=LEARNING_RATE,
         training_seed=SEED,
         data_seed=SEED,
-        optimizer_recipe="muon_hidden_adamw_rest",
+        optimizer_recipe="polar_muon_hidden_adamw_rest",
+        optimizer_source_sha256=hashlib.sha256(
+            Path(__file__).with_name("muon_lab4.py").read_bytes()
+        ).hexdigest(),
+        baseline_commit="2c49ce6",
         muon_momentum=0.95,
-        muon_ns_steps=5,
+        muon_orthogonalization="polar_express",
+        muon_polar_steps=5,
+        muon_coefficient_source="arxiv:2505.16932v4_appendix_A",
         muon_adjust_lr_fn="match_rms_adamw",
     )
     config = GPT2Config(
