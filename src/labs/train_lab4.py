@@ -26,11 +26,10 @@ from muon_lab4 import MuonAdamW
 SEQUENCE_LENGTH = 1024
 PER_DEVICE_BATCH_SIZE = 64
 GRADIENT_ACCUMULATION_STEPS = 1
-EXPERIMENT = "Q2"
+EXPERIMENT = "R2"
 JOB_SECONDS = 30 * 60
 FINALIZE_RESERVE_SECONDS = 3 * 60
 LEARNING_RATE = 2e-3
-COOLDOWN_SHAPE = "linear"
 WARMUP_RATIO = 0.05
 WEIGHT_DECAY = 0.1
 MAX_GRAD_NORM = 1.0
@@ -94,15 +93,9 @@ class TimeCallback(TrainerCallback):
         self.update_progress(args)
         if self.progress < WARMUP_RATIO:
             scale = self.progress / WARMUP_RATIO
-        elif self.progress < 0.8:
-            scale = 1.0
         else:
-            cooldown_progress = (self.progress - 0.8) / 0.2
-            scale = (
-                1.0 - math.sqrt(cooldown_progress)
-                if COOLDOWN_SHAPE == "sqrt"
-                else 1.0 - cooldown_progress
-            )
+            decay_progress = (self.progress - WARMUP_RATIO) / (1.0 - WARMUP_RATIO)
+            scale = 0.5 * (1.0 + math.cos(math.pi * decay_progress))
         self.trainer.lr_scale = scale
         for group in optimizer.param_groups:
             group["lr"] = LEARNING_RATE * scale
@@ -195,8 +188,11 @@ def train():
         finalize_reserve_seconds=FINALIZE_RESERVE_SECONDS,
         training_dataset_fingerprint=dataset._fingerprint,
         training_blocks=len(dataset),
-        schedule=f"wsd_5_75_20_{COOLDOWN_SHAPE}",
-        cooldown_shape=COOLDOWN_SHAPE,
+        schedule="warmup_5_cosine_95",
+        cosine_min_lr_ratio=0.0,
+        schedule_control_experiment="Q2",
+        schedule_control_commit="611ca8aa024b36fbea676b89ac98bbfac44ee1f1",
+        schedule_reference_run="cerulean-labs/gpt2-training/73376194",
         muon_learning_rate=LEARNING_RATE,
         adamw_learning_rate=LEARNING_RATE,
         training_seed=SEED,
