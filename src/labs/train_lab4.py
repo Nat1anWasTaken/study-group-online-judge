@@ -1,4 +1,5 @@
 import hashlib
+import json
 import math
 import os
 import subprocess
@@ -26,7 +27,8 @@ from muon_lab4 import MuonAdamW
 SEQUENCE_LENGTH = 1024
 PER_DEVICE_BATCH_SIZE = 64
 GRADIENT_ACCUMULATION_STEPS = 1
-EXPERIMENT = "K1"
+EXPERIMENT = "O"
+AVERAGE_PROGRESS = (0.90, 0.925, 0.95, 0.975, 1.0)
 JOB_SECONDS = 30 * 60
 FINALIZE_RESERVE_SECONDS = 3 * 60
 LEARNING_RATE = 1e-3
@@ -113,6 +115,50 @@ class TimeCallback(TrainerCallback):
             control.should_training_stop = True
 
 
+class WeightAverage(TrainerCallback):
+    def __init__(self, model, timing):
+        self.model = model
+        self.timing = timing
+        self.weights = {}
+        self.samples = []
+
+    @torch.no_grad()
+    def on_step_end(self, args, state, control, **kwargs):
+        if not state.is_world_process_zero:
+            return
+        index = len(self.samples)
+        if index >= len(AVERAGE_PROGRESS):
+            return
+        if self.timing.progress < AVERAGE_PROGRESS[index]:
+            return
+        if (
+            index + 1 < len(AVERAGE_PROGRESS)
+            and self.timing.progress >= AVERAGE_PROGRESS[index + 1]
+        ):
+            raise RuntimeError("Training skipped an averaging checkpoint")
+        for name, parameter in self.model.named_parameters():
+            if index == 0:
+                self.weights[name] = parameter.detach().float().clone()
+            else:
+                self.weights[name].lerp_(parameter.detach().float(), 1 / (index + 1))
+        self.samples.append(dict(
+            target_progress=AVERAGE_PROGRESS[index],
+            actual_progress=self.timing.progress,
+            train_step=state.global_step,
+            learning_rate=self.timing.trainer.lr_scale * LEARNING_RATE,
+        ))
+
+    @torch.no_grad()
+    def save(self, directory, tokenizer):
+        if len(self.samples) != len(AVERAGE_PROGRESS):
+            raise RuntimeError(f"Expected five averaging checkpoints, found {len(self.samples)}")
+        for name, parameter in self.model.named_parameters():
+            parameter.copy_(self.weights[name])
+        self.model.save_pretrained(directory)
+        tokenizer.save_pretrained(directory)
+        (directory / "averaging.json").write_text(json.dumps(self.samples, indent=2))
+
+
 class ProvenanceCallback(TrainerCallback):
     def __init__(self, provenance):
         self.provenance = provenance
@@ -137,16 +183,22 @@ class TimedTrainer(Trainer):
     def create_optimizer(self):
         if self.optimizer is None:
             decay_names = self.get_decay_parameter_names(self.model)
-            matrices, decay, no_decay = [], [], []
+            matrices, qkv, decay, no_decay = [], [], [], []
             for name, parameter in self.model.named_parameters():
-                if name.startswith("transformer.h.") and parameter.ndim == 2:
+                if name.endswith("attn.c_attn.weight"):
+                    if tuple(parameter.shape) != (768, 2304):
+                        raise ValueError(f"Unexpected QKV layout: {name} {parameter.shape}")
+                    qkv.append(parameter)
+                elif name.startswith("transformer.h.") and parameter.ndim == 2:
                     matrices.append(parameter)
                 elif name in decay_names:
                     decay.append(parameter)
                 else:
                     no_decay.append(parameter)
+            if len(qkv) != 12:
+                raise ValueError(f"Expected 12 fused QKV weights, found {len(qkv)}")
             self.optimizer = MuonAdamW(
-                matrices, decay, no_decay, LEARNING_RATE, WEIGHT_DECAY, ADAM_BETAS
+                matrices, decay, no_decay, LEARNING_RATE, WEIGHT_DECAY, ADAM_BETAS, qkv
             )
         return self.optimizer
 
@@ -177,6 +229,13 @@ def train():
     hf_repo_id = f"{HF_REPO_ID}-{EXPERIMENT.lower()}-{provenance['git_commit'][:8]}"
     provenance.update(
         experiment=EXPERIMENT,
+        baseline_commit="2c49ce6",
+        averaging_progress=list(AVERAGE_PROGRESS),
+        averaging_method="equal_weight_same_trajectory",
+        hf_avg_model_id=f"{hf_repo_id}-avg",
+        optimizer_source_sha256=hashlib.sha256(
+            Path(__file__).with_name("muon_lab4.py").read_bytes()
+        ).hexdigest(),
         slurm_job_id=os.environ.get("SLURM_JOB_ID"),
         hf_model_id=hf_repo_id,
         job_budget_seconds=JOB_SECONDS,
@@ -190,7 +249,10 @@ def train():
         adamw_learning_rate=LEARNING_RATE,
         training_seed=SEED,
         data_seed=SEED,
-        optimizer_recipe="muon_hidden_adamw_rest",
+        optimizer_recipe="split_qkv_muon_hidden_adamw_rest",
+        qkv_split_axis=1,
+        qkv_parts=3,
+        qkv_submatrix_shape=[768, 768],
         muon_momentum=0.95,
         muon_ns_steps=5,
         muon_adjust_lr_fn="match_rms_adamw",
@@ -251,6 +313,8 @@ def train():
     )
     timing = TimeCallback(trainer)
     trainer.add_callback(timing)
+    average = WeightAverage(model, timing)
+    trainer.add_callback(average)
     allocation_started = float(os.environ["LAB4_START_TIME"])
     result = trainer.train()
     training_finished = time.time()
@@ -272,6 +336,8 @@ def train():
     model.config.use_cache = True
     save_started = time.monotonic()
     trainer.save_model()
+    if trainer.is_world_process_zero():
+        average.save(output_dir / "avg", tokenizer)
     trainer.accelerator.wait_for_everyone()
     save_seconds = time.monotonic() - save_started
 
@@ -284,6 +350,11 @@ def train():
             save_seconds=save_seconds,
             allocation_elapsed_seconds=time.time() - allocation_started,
             final_train_step=trainer.state.global_step,
+            averaging_samples=average.samples,
+            averaging_completed=True,
+            avg_evaluation_completed=False,
+            avg_hf_upload_completed=False,
+            hf_avg_model_id=f"{hf_repo_id}-avg",
             training_completed=True,
             evaluation_completed=False,
             hf_upload_completed=False,
