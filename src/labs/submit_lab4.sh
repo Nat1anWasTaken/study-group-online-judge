@@ -4,12 +4,13 @@ set -euo pipefail
 LAB4_SOURCE_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$LAB4_SOURCE_DIR"
 mkdir -p logs
+sbatch_options=(--exclude="${LAB4_EXCLUDE_NODES:-25a-hgpn003}")
 
-training_job=$(sbatch --parsable --chdir="$LAB4_SOURCE_DIR" src/labs/train_lab4.sbatch)
+training_job=$(sbatch "${sbatch_options[@]}" --parsable --chdir="$LAB4_SOURCE_DIR" src/labs/train_lab4.sbatch)
 training_job=${training_job%%;*}
 printf 'Training job: %s\n' "$training_job"
 
-if publish_job=$(sbatch --parsable --chdir="$LAB4_SOURCE_DIR" \
+if publish_job=$(sbatch "${sbatch_options[@]}" --parsable --chdir="$LAB4_SOURCE_DIR" \
     --dependency="afterok:$training_job" --kill-on-invalid-dep=yes \
     src/labs/publish_lab4.sbatch "$training_job"); then
     publish_job=${publish_job%%;*}
