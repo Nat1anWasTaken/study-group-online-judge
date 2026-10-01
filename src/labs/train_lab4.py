@@ -26,7 +26,7 @@ from muon_lab4 import MuonAdamW
 SEQUENCE_LENGTH = 1024
 PER_DEVICE_BATCH_SIZE = 64
 GRADIENT_ACCUMULATION_STEPS = 1
-EXPERIMENT = "K1"
+EXPERIMENT = "O"
 JOB_SECONDS = 30 * 60
 FINALIZE_RESERVE_SECONDS = 3 * 60
 LEARNING_RATE = 1e-3
@@ -137,16 +137,22 @@ class TimedTrainer(Trainer):
     def create_optimizer(self):
         if self.optimizer is None:
             decay_names = self.get_decay_parameter_names(self.model)
-            matrices, decay, no_decay = [], [], []
+            matrices, qkv, decay, no_decay = [], [], [], []
             for name, parameter in self.model.named_parameters():
-                if name.startswith("transformer.h.") and parameter.ndim == 2:
+                if name.endswith("attn.c_attn.weight"):
+                    if tuple(parameter.shape) != (768, 2304):
+                        raise ValueError(f"Unexpected QKV layout: {name} {parameter.shape}")
+                    qkv.append(parameter)
+                elif name.startswith("transformer.h.") and parameter.ndim == 2:
                     matrices.append(parameter)
                 elif name in decay_names:
                     decay.append(parameter)
                 else:
                     no_decay.append(parameter)
+            if len(qkv) != 12:
+                raise ValueError(f"Expected 12 fused QKV weights, found {len(qkv)}")
             self.optimizer = MuonAdamW(
-                matrices, decay, no_decay, LEARNING_RATE, WEIGHT_DECAY, ADAM_BETAS
+                matrices, decay, no_decay, LEARNING_RATE, WEIGHT_DECAY, ADAM_BETAS, qkv
             )
         return self.optimizer
 
@@ -177,6 +183,10 @@ def train():
     hf_repo_id = f"{HF_REPO_ID}-{EXPERIMENT.lower()}-{provenance['git_commit'][:8]}"
     provenance.update(
         experiment=EXPERIMENT,
+        baseline_commit="2c49ce6",
+        optimizer_source_sha256=hashlib.sha256(
+            Path(__file__).with_name("muon_lab4.py").read_bytes()
+        ).hexdigest(),
         slurm_job_id=os.environ.get("SLURM_JOB_ID"),
         hf_model_id=hf_repo_id,
         job_budget_seconds=JOB_SECONDS,
@@ -190,7 +200,10 @@ def train():
         adamw_learning_rate=LEARNING_RATE,
         training_seed=SEED,
         data_seed=SEED,
-        optimizer_recipe="muon_hidden_adamw_rest",
+        optimizer_recipe="split_qkv_muon_hidden_adamw_rest",
+        qkv_split_axis=1,
+        qkv_parts=3,
+        qkv_submatrix_shape=[768, 768],
         muon_momentum=0.95,
         muon_ns_steps=5,
         muon_adjust_lr_fn="match_rms_adamw",
