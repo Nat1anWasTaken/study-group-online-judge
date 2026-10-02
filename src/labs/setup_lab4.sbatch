@@ -2,7 +2,7 @@
 #SBATCH --job-name=lab4-l1-setup
 #SBATCH --gres=gpu:1
 #SBATCH --time=00:30:00
-#SBATCH --cpus-per-task=24
+#SBATCH --cpus-per-task=12
 #SBATCH --mem=96G
 #SBATCH --output=logs/lab4-setup-%j.out
 #SBATCH --error=logs/lab4-setup-%j.err
