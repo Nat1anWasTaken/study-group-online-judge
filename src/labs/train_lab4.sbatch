@@ -15,6 +15,7 @@ module purge
 module load cuda/13.0
 
 LAB4_SOURCE_DIR="$PWD"
+export UV_PROJECT_ENVIRONMENT="$LAB4_SOURCE_DIR/work/lab4-fa2-env"
 
 unset WANDB_SERVICE
 export NCCL_SOCKET_IFNAME="=lo"

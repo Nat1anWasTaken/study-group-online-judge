@@ -120,21 +120,20 @@ uv run ty check
 uv run python -m pytest -q tests
 ```
 
-Lab 4 training uses the R4 recipe with external FlashAttention-2. Prepare
-FA2 inside a CUDA 13 Slurm allocation before the timed training run, using
-the existing CUDA-enabled PyTorch environment. Wait for active experiments
-to finish before changing their shared environment.
+Lab 4 uses the L1 recipe: R4 with external FlashAttention-2. Prepare
+FA2 inside a CUDA 13 Slurm allocation before the timed training run:
 
 ```console
-module load cuda/13.0
-uv pip install --python .venv/bin/python ninja packaging psutil setuptools einops
-uv pip install --python .venv/bin/python --no-build-isolation --no-deps flash-attn==2.8.3.post1
+mkdir -p logs
+sbatch --account=ACD115198 --constraint=H200 --exclude=25a-hgpn001,25a-hgpn003 src/labs/setup_lab4.sbatch
 ```
 
-The `flash-attention` dependency group records the training dependencies;
-the default Linux uv source selects CPU PyTorch. FA2 may require a source
-build with Python 3.14. Training retains FP32 parameters and BF16 autocast;
-publication evaluates with FP32 parameters and SDPA.
+Setup creates an isolated `work/lab4-fa2-env` environment that reads the
+existing CUDA-enabled PyTorch packages from `.venv`. Training uses this
+isolated environment; setup does not overwrite `.venv`. The
+`flash-attention` dependency group records the training dependencies.
+FA2 may require a source build with Python 3.14. Training retains FP32
+parameters and BF16 autocast; publication evaluates with FP32 and SDPA.
 
 The API exposes `GET /healthz`, `POST /submissions`, and `GET /jobs/{job_id}`.
 Submission and job routes require `Authorization: Bearer <JUDGE_API_TOKEN>`.
