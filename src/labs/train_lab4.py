@@ -26,10 +26,10 @@ import wandb
 SEQUENCE_LENGTH = 1024
 PER_DEVICE_BATCH_SIZE = 64
 GRADIENT_ACCUMULATION_STEPS = 1
-EXPERIMENT = "L1"
+EXPERIMENT = "L2"
 ATTENTION_IMPLEMENTATION = "flash_attention_2"
 JOB_SECONDS = 30 * 60
-FINALIZE_RESERVE_SECONDS = 3 * 60
+FINALIZE_RESERVE_SECONDS = 30
 LEARNING_RATE = 4e-3
 WARMUP_RATIO = 0.05
 WEIGHT_DECAY = 0.1
@@ -181,8 +181,9 @@ def train():
         experiment=EXPERIMENT,
         attention_implementation=ATTENTION_IMPLEMENTATION,
         flash_attn_version=version("flash-attn"),
-        baseline_commit="d80e9e8b494e8f5079ae388906ce3fbf1ad0de7c",
-        baseline_experiment="R4",
+        baseline_commit="eabd952b96d8d0e7bf9114b9b81ebae09537e89f",
+        baseline_experiment="L1",
+        baseline_run="cerulean-labs/gpt2-training/4jgoyh41",
         optimizer_source_sha256=hashlib.sha256(
             Path(__file__).with_name("muon_lab4.py").read_bytes()
         ).hexdigest(),
