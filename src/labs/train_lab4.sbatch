@@ -21,9 +21,11 @@ export NCCL_SOCKET_IFNAME="=lo"
 export WANDB_PROJECT=gpt2-training
 export TOKENIZERS_PARALLELISM=false
 export WANDB_DIR="$LAB4_SOURCE_DIR"
+printf 'Allocated CUDA devices: %s\n' "$CUDA_VISIBLE_DEVICES"
 
 uv run --project "$LAB4_SOURCE_DIR" --env-file /work/nat1andotxyz/study-group-online-judge/.env --no-sync python -m accelerate.commands.launch \
     --multi_gpu \
+    --gpu_ids all \
     --num_processes 2 \
     --main_process_port "$((20000 + SLURM_JOB_ID % 40000))" \
     --mixed_precision bf16 \
