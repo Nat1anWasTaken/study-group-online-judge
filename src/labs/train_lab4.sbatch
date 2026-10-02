@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-#SBATCH --job-name=lab4-u8-train
+#SBATCH --job-name=lab4-u20-train
 #SBATCH --gres=gpu:2
 #SBATCH --time=00:30:00
 #SBATCH --cpus-per-task=24
