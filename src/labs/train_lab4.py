@@ -3,13 +3,11 @@ import math
 import os
 import subprocess
 import time
-from importlib.metadata import version
 from pathlib import Path
 
 import torch
 import torch.distributed
 from datasets import load_from_disk
-from muon_lab4 import MuonAdamW
 from transformers import (
     AutoTokenizer,
     GPT2Config,
@@ -23,11 +21,12 @@ from transformers import (
 
 import wandb
 
+from muon_lab4 import MuonAdamW
+
 SEQUENCE_LENGTH = 1024
 PER_DEVICE_BATCH_SIZE = 64
 GRADIENT_ACCUMULATION_STEPS = 1
-EXPERIMENT = "R4-FA2"
-ATTENTION_IMPLEMENTATION = "flash_attention_2"
+EXPERIMENT = "R4"
 JOB_SECONDS = 30 * 60
 FINALIZE_RESERVE_SECONDS = 3 * 60
 LEARNING_RATE = 4e-3
@@ -135,9 +134,7 @@ class TimedTrainer(Trainer):
             for name, parameter in self.model.named_parameters():
                 if name.endswith("attn.c_attn.weight"):
                     if tuple(parameter.shape) != (768, 2304):
-                        raise ValueError(
-                            f"Unexpected QKV layout: {name} {parameter.shape}"
-                        )
+                        raise ValueError(f"Unexpected QKV layout: {name} {parameter.shape}")
                     qkv.append(parameter)
                 elif name.startswith("transformer.h.") and parameter.ndim == 2:
                     matrices.append(parameter)
@@ -179,10 +176,8 @@ def train():
     hf_repo_id = f"{HF_REPO_ID}-{EXPERIMENT.lower()}-{provenance['git_commit'][:8]}"
     provenance.update(
         experiment=EXPERIMENT,
-        attention_implementation=ATTENTION_IMPLEMENTATION,
-        flash_attn_version=version("flash-attn"),
-        baseline_commit="d80e9e8b494e8f5079ae388906ce3fbf1ad0de7c",
-        baseline_experiment="R4",
+        baseline_commit="3f4c5e1",
+        baseline_experiment="O-final",
         optimizer_source_sha256=hashlib.sha256(
             Path(__file__).with_name("muon_lab4.py").read_bytes()
         ).hexdigest(),
@@ -211,7 +206,6 @@ def train():
         muon_adjust_lr_fn="match_rms_adamw",
     )
     config = GPT2Config(
-        attn_implementation=ATTENTION_IMPLEMENTATION,
         vocab_size=50304,
         n_positions=SEQUENCE_LENGTH,
         n_ctx=SEQUENCE_LENGTH,
@@ -230,7 +224,6 @@ def train():
     )
 
     model = GPT2LMHeadModel(config)
-    print(f"Training attention: {model.config._attn_implementation}", flush=True)
     trainer = TimedTrainer(
         model=model,
         args=TrainingArguments(
@@ -295,19 +288,17 @@ def train():
     trainer.log_metrics("train", result.metrics)
     trainer.log(result.metrics)
     if trainer.is_world_process_zero():
-        wandb.run.summary.update(
-            {
-                "startup_seconds": timing.started - allocation_started,
-                "train_loop_seconds": training_finished - timing.started,
-                "save_seconds": save_seconds,
-                "allocation_elapsed_seconds": time.time() - allocation_started,
-                "final_train_step": trainer.state.global_step,
-                "training_completed": True,
-                "evaluation_completed": False,
-                "hf_upload_completed": False,
-                "hf_model_id": hf_repo_id,
-            }
-        )
+        wandb.run.summary.update(dict(
+            startup_seconds=timing.started - allocation_started,
+            train_loop_seconds=training_finished - timing.started,
+            save_seconds=save_seconds,
+            allocation_elapsed_seconds=time.time() - allocation_started,
+            final_train_step=trainer.state.global_step,
+            training_completed=True,
+            evaluation_completed=False,
+            hf_upload_completed=False,
+            hf_model_id=hf_repo_id,
+        ))
         print(
             f"Saved final model at {output_dir}; evaluate and publish separately to {hf_repo_id}",
             flush=True,

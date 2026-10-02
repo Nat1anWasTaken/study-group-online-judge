@@ -20,8 +20,7 @@ class SplitQKVMuon(torch.optim.Muon):
                 momentum.lerp_(parameter.grad, 1 - group["momentum"])
                 update = (
                     parameter.grad.lerp(momentum, group["momentum"])
-                    if group["nesterov"]
-                    else momentum
+                    if group["nesterov"] else momentum
                 )
                 parameter.mul_(1 - group["lr"] * group["weight_decay"])
                 for weight, block in zip(
@@ -40,31 +39,17 @@ class SplitQKVMuon(torch.optim.Muon):
 class MuonAdamW(torch.optim.Optimizer):
     def __init__(self, matrices, decay, no_decay, lr, weight_decay, betas, qkv):
         self.muon = torch.optim.Muon(
-            matrices,
-            lr=lr,
-            weight_decay=weight_decay,
-            momentum=0.95,
-            nesterov=True,
-            ns_steps=5,
-            adjust_lr_fn="match_rms_adamw",
+            matrices, lr=lr, weight_decay=weight_decay, momentum=0.95,
+            nesterov=True, ns_steps=5, adjust_lr_fn="match_rms_adamw",
         )
         self.qkv = SplitQKVMuon(
-            qkv,
-            lr=lr,
-            weight_decay=weight_decay,
-            momentum=0.95,
-            nesterov=True,
-            ns_steps=5,
-            adjust_lr_fn="match_rms_adamw",
+            qkv, lr=lr, weight_decay=weight_decay, momentum=0.95,
+            nesterov=True, ns_steps=5, adjust_lr_fn="match_rms_adamw",
         )
         self.adam = torch.optim.AdamW(
-            [
-                {"params": decay, "weight_decay": weight_decay},
-                {"params": no_decay, "weight_decay": 0.0},
-            ],
-            lr=lr,
-            betas=betas,
-            fused=True,
+            [{"params": decay, "weight_decay": weight_decay},
+             {"params": no_decay, "weight_decay": 0.0}],
+            lr=lr, betas=betas, fused=True,
         )
         super().__init__(
             self.muon.param_groups + self.qkv.param_groups + self.adam.param_groups,
@@ -89,6 +74,4 @@ class MuonAdamW(torch.optim.Optimizer):
         self.muon.load_state_dict(state["muon"])
         self.qkv.load_state_dict(state["qkv"])
         self.adam.load_state_dict(state["adam"])
-        self.param_groups = (
-            self.muon.param_groups + self.qkv.param_groups + self.adam.param_groups
-        )
+        self.param_groups = self.muon.param_groups + self.qkv.param_groups + self.adam.param_groups

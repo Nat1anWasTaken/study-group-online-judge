@@ -20,21 +20,11 @@ dependencies = [
 ]
 
 [dependency-groups]
-flash-attention = [
-    "flash-attn==2.8.3.post1",
-    "ninja>=1.11",
-    "packaging>=24",
-    "psutil>=5.9",
-    "setuptools>=77",
-]
 dev = [
     "pytest>=9,<10",
     "ruff>=0.16.8",
     "ty>=0.0.82",
 ]
-
-[tool.uv]
-no-build-isolation-package = ["flash-attn"]
 
 [tool.uv.sources]
 torch = [{ index = "pytorch-cpu", marker = "sys_platform == 'linux'" }]
