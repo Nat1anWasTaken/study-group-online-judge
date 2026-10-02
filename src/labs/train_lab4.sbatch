@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-#SBATCH --job-name=lab4-train
+#SBATCH --job-name=lab4-w3-train
 #SBATCH --gres=gpu:2
 #SBATCH --time=00:30:00
 #SBATCH --cpus-per-task=24
@@ -15,8 +15,10 @@ module purge
 module load cuda/13.0
 
 LAB4_SOURCE_DIR="$PWD"
-export UV_PROJECT_ENVIRONMENT="$LAB4_SOURCE_DIR/work/lab4-fa2-env"
+export UV_PROJECT_ENVIRONMENT="/work/nat1andotxyz/study-group-online-judge/work/lab4-fa2-env"
 
+export TORCHINDUCTOR_CACHE_DIR="$LAB4_SOURCE_DIR/work/compile-$SLURM_JOB_ID/inductor"
+export TRITON_CACHE_DIR="$LAB4_SOURCE_DIR/work/compile-$SLURM_JOB_ID/triton"
 unset WANDB_SERVICE
 export NCCL_SOCKET_IFNAME="=lo"
 export WANDB_PROJECT=gpt2-training

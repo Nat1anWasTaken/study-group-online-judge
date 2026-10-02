@@ -26,7 +26,7 @@ import wandb
 SEQUENCE_LENGTH = 1024
 PER_DEVICE_BATCH_SIZE = 64
 GRADIENT_ACCUMULATION_STEPS = 1
-EXPERIMENT = "L2"
+EXPERIMENT = "W3"
 ATTENTION_IMPLEMENTATION = "flash_attention_2"
 JOB_SECONDS = 30 * 60
 FINALIZE_RESERVE_SECONDS = 30
@@ -181,9 +181,9 @@ def train():
         experiment=EXPERIMENT,
         attention_implementation=ATTENTION_IMPLEMENTATION,
         flash_attn_version=version("flash-attn"),
-        baseline_commit="eabd952b96d8d0e7bf9114b9b81ebae09537e89f",
-        baseline_experiment="L1",
-        baseline_run="cerulean-labs/gpt2-training/4jgoyh41",
+        baseline_commit="0bf785d8705d09c8ab84a9f3554746ee039d597e",
+        baseline_experiment="L2",
+        baseline_run="cerulean-labs/gpt2-training/j6v7o2zk",
         optimizer_source_sha256=hashlib.sha256(
             Path(__file__).with_name("muon_lab4.py").read_bytes()
         ).hexdigest(),
@@ -207,6 +207,8 @@ def train():
         qkv_split_axis=1,
         qkv_parts=3,
         qkv_submatrix_shape=[768, 768],
+        muon_execution_batched=True,
+        muon_execution_compiled=True,
         muon_momentum=0.95,
         muon_ns_steps=5,
         muon_adjust_lr_fn="match_rms_adamw",
