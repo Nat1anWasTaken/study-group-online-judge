@@ -16,11 +16,13 @@ module load cuda/13.0
 
 LAB4_SOURCE_DIR="$PWD"
 
+unset WANDB_SERVICE
+export NCCL_SOCKET_IFNAME="=lo"
 export WANDB_PROJECT=gpt2-training
 export TOKENIZERS_PARALLELISM=false
 export WANDB_DIR="$LAB4_SOURCE_DIR"
 
-uv run --project /work/nat1andotxyz/study-group-online-judge --env-file /work/nat1andotxyz/study-group-online-judge/.env --no-sync accelerate launch \
+uv run --project "$LAB4_SOURCE_DIR" --env-file /work/nat1andotxyz/study-group-online-judge/.env --no-sync accelerate launch \
     --multi_gpu \
     --num_processes 2 \
     --main_process_port "$((20000 + SLURM_JOB_ID % 40000))" \
