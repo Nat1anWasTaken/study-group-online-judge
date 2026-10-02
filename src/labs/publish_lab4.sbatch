@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-#SBATCH --job-name=lab4-u8-publish
+#SBATCH --job-name=lab4-u17-publish
 #SBATCH --partition=dev
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=4
