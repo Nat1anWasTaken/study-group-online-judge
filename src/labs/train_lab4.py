@@ -26,11 +26,10 @@ from muon_lab4 import MuonAdamW
 SEQUENCE_LENGTH = 1024
 PER_DEVICE_BATCH_SIZE = 64
 GRADIENT_ACCUMULATION_STEPS = 1
-EXPERIMENT = "K1"
+EXPERIMENT = "R4"
 JOB_SECONDS = 30 * 60
 FINALIZE_RESERVE_SECONDS = 3 * 60
-LEARNING_RATE = 1e-3
-COOLDOWN_SHAPE = "linear"
+LEARNING_RATE = 4e-3
 WARMUP_RATIO = 0.05
 WEIGHT_DECAY = 0.1
 MAX_GRAD_NORM = 1.0
@@ -94,15 +93,9 @@ class TimeCallback(TrainerCallback):
         self.update_progress(args)
         if self.progress < WARMUP_RATIO:
             scale = self.progress / WARMUP_RATIO
-        elif self.progress < 0.8:
-            scale = 1.0
         else:
-            cooldown_progress = (self.progress - 0.8) / 0.2
-            scale = (
-                1.0 - math.sqrt(cooldown_progress)
-                if COOLDOWN_SHAPE == "sqrt"
-                else 1.0 - cooldown_progress
-            )
+            decay_progress = (self.progress - WARMUP_RATIO) / (1.0 - WARMUP_RATIO)
+            scale = 0.5 * (1.0 + math.cos(math.pi * decay_progress))
         self.trainer.lr_scale = scale
         for group in optimizer.param_groups:
             group["lr"] = LEARNING_RATE * scale
@@ -137,16 +130,22 @@ class TimedTrainer(Trainer):
     def create_optimizer(self):
         if self.optimizer is None:
             decay_names = self.get_decay_parameter_names(self.model)
-            matrices, decay, no_decay = [], [], []
+            matrices, qkv, decay, no_decay = [], [], [], []
             for name, parameter in self.model.named_parameters():
-                if name.startswith("transformer.h.") and parameter.ndim == 2:
+                if name.endswith("attn.c_attn.weight"):
+                    if tuple(parameter.shape) != (768, 2304):
+                        raise ValueError(f"Unexpected QKV layout: {name} {parameter.shape}")
+                    qkv.append(parameter)
+                elif name.startswith("transformer.h.") and parameter.ndim == 2:
                     matrices.append(parameter)
                 elif name in decay_names:
                     decay.append(parameter)
                 else:
                     no_decay.append(parameter)
+            if len(qkv) != 12:
+                raise ValueError(f"Expected 12 fused QKV weights, found {len(qkv)}")
             self.optimizer = MuonAdamW(
-                matrices, decay, no_decay, LEARNING_RATE, WEIGHT_DECAY, ADAM_BETAS
+                matrices, decay, no_decay, LEARNING_RATE, WEIGHT_DECAY, ADAM_BETAS, qkv
             )
         return self.optimizer
 
@@ -177,6 +176,11 @@ def train():
     hf_repo_id = f"{HF_REPO_ID}-{EXPERIMENT.lower()}-{provenance['git_commit'][:8]}"
     provenance.update(
         experiment=EXPERIMENT,
+        baseline_commit="3f4c5e1",
+        baseline_experiment="O-final",
+        optimizer_source_sha256=hashlib.sha256(
+            Path(__file__).with_name("muon_lab4.py").read_bytes()
+        ).hexdigest(),
         slurm_job_id=os.environ.get("SLURM_JOB_ID"),
         hf_model_id=hf_repo_id,
         job_budget_seconds=JOB_SECONDS,
@@ -184,13 +188,19 @@ def train():
         finalize_reserve_seconds=FINALIZE_RESERVE_SECONDS,
         training_dataset_fingerprint=dataset._fingerprint,
         training_blocks=len(dataset),
-        schedule=f"wsd_5_75_20_{COOLDOWN_SHAPE}",
-        cooldown_shape=COOLDOWN_SHAPE,
+        schedule="warmup_5_cosine_95",
+        cosine_min_lr_ratio=0.0,
+        schedule_control_experiment="Q4",
+        schedule_control_commit="5e95d38dd24245f84b727232906a7fc390e93550",
+        schedule_reference_run="cerulean-labs/gpt2-training/73376194",
         muon_learning_rate=LEARNING_RATE,
         adamw_learning_rate=LEARNING_RATE,
         training_seed=SEED,
         data_seed=SEED,
-        optimizer_recipe="muon_hidden_adamw_rest",
+        optimizer_recipe="split_qkv_muon_hidden_adamw_rest",
+        qkv_split_axis=1,
+        qkv_parts=3,
+        qkv_submatrix_shape=[768, 768],
         muon_momentum=0.95,
         muon_ns_steps=5,
         muon_adjust_lr_fn="match_rms_adamw",
