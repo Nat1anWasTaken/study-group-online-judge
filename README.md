@@ -26,48 +26,14 @@ as a Python module and calls the required function. For example, `lab1` loads
 `src/labs/lab1.py` and calls `gpt2_complete`; it checks the completions and
 logits against GPT-2 Small using 20 Tiny Shakespeare prompts.
 
-For `lab2`, implement `mmlu_eval()` in `src/labs/lab2.py` and include
-`src/labs/lab2.sbatch`. The function returns an A/B/C/D prediction for every
-test row in the `all` configuration of
-[`cais/mmlu`](https://huggingface.co/datasets/cais/mmlu), pinned to revision
-`c30699e8356da336a370243923dbaf21066bb9fe`. Use the first four `dev`
-rows of the same subject as exemplars and truncate prompts to the final 1024
-GPT-2 tokens. Score the next-token logits of the plain `A`, `B`, `C`, and `D`
-tokens after `Answer: `. The result key is the SHA-256 of this exact compact
-UTF-8 JSON encoding, where `index` is the zero-based row number in the pinned
-`all` test split:
-
-```python
-payload = {
-    "index": index,
-    "subject": row["subject"],
-    "question": row["question"],
-    "choices": row["choices"],
-}
-key = hashlib.sha256(
-    json.dumps(
-        payload, sort_keys=True, ensure_ascii=False, separators=(",", ":")
-    ).encode("utf-8")
-).hexdigest()
-```
-
-The row index is necessary because some MMLU questions, including some with
-identical subjects and choices, repeat. The H200 judge evaluates every test
-question against GPT-2 Small. It reports overall agreement and per-subject
-mismatch row numbers and hash prefixes to W&B, not one W&B row per question.
-Lab 2 passes when at least 97% of the predictions match and has no scoreboard.
-Its W&B `score` is the fraction matching the GPT-2 reference, and
-`samples_passed` is the corresponding question count. `mmlu_accuracy` is the
-fraction of participant predictions matching MMLU's answer labels, not the
-fraction matching the reference.
-
 For a GPU task, also put an editable `src/labs/labX.sbatch` in your fork,
-replacing `X` with the task number. The Nano4 sub-judge submits that file to
-Slurm. Use [the template](src/labs/labX.sbatch) as a starting point. The judge
-supplies `JUDGE_TASK_ID`, `JUDGE_SUBMISSION_DIR`, `JUDGE_OUTPUT_DIR`, and
-`JUDGE_TRUSTED_ROOT`, and overrides resource limits when calling `sbatch`.
-The script must leave a valid `result.json` in `JUDGE_OUTPUT_DIR` by running
-the trusted task runner. CPU tasks, including `lab1` today, do not use sbatch.
+replacing `X` with the task number. The SSH worker submits that file to Slurm
+after preparing its repository. Use an existing lab batch file as a starting
+point. The judge supplies `JUDGE_TASK_ID`, `JUDGE_SUBMISSION_DIR`,
+`JUDGE_OUTPUT_DIR`, and `JUDGE_TRUSTED_ROOT`, and overrides resource limits
+when calling `sbatch`. The script must leave a valid `result.json` in
+`JUDGE_OUTPUT_DIR` by running the trusted task runner. CPU tasks, including
+`lab1` today, do not use sbatch.
 
 Keep your implementation in your fork. Changing the judge's task code in your
 fork does not change the evaluation used by the deployed judge.
@@ -106,7 +72,7 @@ Register the task instance in the `TASKS` dictionary in
 `.github/workflows/submit.yaml` so participants can select it. Return
 `JudgeResult(passed=...)` for correctness tasks, or include `score` and
 `metrics` for benchmarks. Set `gpus` in `Resources` when a task needs a GPU;
-this routes submissions to a registered Slurm sub-judge. Each such submission
+this routes submissions through the SSH worker to Slurm. Each such submission
 must include `src/labs/<task_id>.sbatch` at its submitted commit. The master
 trusts its own task definitions, while participants can edit their batch file.
 
@@ -122,25 +88,66 @@ uv run python -m pytest -q tests
 
 The API exposes `GET /healthz`, `POST /submissions`, and `GET /jobs/{job_id}`.
 Submission and job routes require `Authorization: Bearer <JUDGE_API_TOKEN>`.
-GPU submissions additionally require an `Idempotency-Key`. The `/agents`
-registration, long-poll, receipt, and event routes use a separate
-`JUDGE_AGENT_TOKEN`. The master does not poll agents for health: it schedules
-only to an agent with an active long-poll and returns an error if the offer is
-not acknowledged. Keep the master API to one process because its pending
-long-polls are held in memory; the job and report records are in SQLite. The
-published master image embeds its source commit; a GPU agent must register
-with the same trusted judge checkout revision to receive work.
+GPU submissions additionally require an `Idempotency-Key`. Successful submission
+means the job is persisted locally, not that Slurm has accepted it. The job ID
+and W&B run ID remain stable when the same request is retried. Reusing a key
+for different submission contents returns HTTP 409. `/agents` routes and
+`JUDGE_AGENT_TOKEN` are no longer used.
 
 ### Deployment
 
-The master requires Docker with Compose, access to the GHCR judge image, a
-W&B project and API key, and a host work directory writable by the judge
-container's UID/GID `10001`. CPU tasks run in the local Docker worker. GPU
-tasks run on a registered bare-metal Slurm sub-judge, not in Docker.
+Compose builds the judge application from this repository; no image publishing
+workflow or GHCR judge pull is required. CPU tasks continue using the local
+Docker worker and the same locally built image. GPU jobs use Tailscale SSH to
+one configured Slurm login node. A separate SSH worker prepares submissions
+and monitors them; the remote helper publishes logs and results directly to W&B
+using a credential stored on that node.
 
-Copy `.env.example` to `.env` and set its required values. `JUDGE_WORK_ROOT`
-must be an absolute host path, mounted at the same path in the worker and its
-evaluator containers. For example:
+Copy `.env.example` to `.env` and set the API token, W&B credentials, and remote
+configuration. Each new GPU job fetches the latest default-branch version of
+`JUDGE_REPO_URL` for its evaluator. No `JUDGE_REVISION` setting is required.
+Push evaluator updates to that branch before submitting jobs that should use them.
+
+Required remote settings:
+
+- `JUDGE_SSH_HOST`: the login node's Tailscale hostname or IP.
+- `JUDGE_SSH_USER`: its Unix user with Slurm submission permissions.
+- `JUDGE_REMOTE_WORK_ROOT`: an absolute shared-storage directory visible to
+  the login node and compute nodes, writable by that user.
+- `JUDGE_REPO_URL`: trusted HTTPS GitHub repository; defaults to this repository.
+- `JUDGE_SLURM_ACCOUNT`: defaults to `ACD115198`.
+- `JUDGE_SLURM_GPU_RESOURCE`: defaults to `gpu`.
+- `TS_AUTHKEY`: auth key for the Compose Tailscale node, generated with
+  **Generate auth key** in the Tailscale admin console. Use the complete
+  `tskey-auth-...` value, rather than an API access token.
+- `TS_HOSTNAME`: defaults to `study-group-online-judge`.
+
+The official Tailscale image and the CLI copied into the judge image both use
+`v1.102.4`. Keep these two versions aligned when upgrading. Tailscale runs in
+userspace mode without `/dev/net/tun` or network
+capabilities. Its identity persists in `tailscale-state`. Only the SSH worker
+mounts its socket; the sidecar's operator user matches the worker UID `10001`.
+The worker uses `tailscale ssh`, which authenticates through tailnet identity
+and verifies the destination's advertised SSH host key. No private SSH key is
+mounted. See [Tailscale SSH](https://tailscale.com/docs/features/tailscale-ssh)
+and [container configuration](https://tailscale.com/docs/features/containers/docker/docker-params).
+
+Enable Tailscale SSH on the remote login node. Configure both a network grant
+to TCP port 22 and an SSH `accept` rule for the Compose node's identity and the
+specific remote Unix user. Automated connections cannot use interactive
+`check` rules. If the auth key assigns a tag, the destination must also be
+appropriately tagged. Tailnet configuration and remote installation are
+administrator prerequisites; Compose does not change them.
+
+The remote node needs Bash, Git, `flock`, uv (with Python 3.14 available or
+uv-managed Python downloads enabled), `sbatch`, and `sacct` on the noninteractive
+SSH PATH. Compute nodes need the `cuda/13.0` module used by the batch templates.
+Setup runs on the login node before submission; evaluation runs in Slurm.
+Dependencies and GitHub must be reachable from the login node.
+
+The local CPU `JUDGE_WORK_ROOT` must be an absolute host directory mounted at
+the same path in the worker and evaluator containers. Prepare it and find the
+Docker socket group:
 
 ```console
 sudo mkdir -p /var/lib/study-group-online-judge/work
@@ -148,80 +155,98 @@ sudo chown 10001:10001 /var/lib/study-group-online-judge/work
 stat -c '%g' /var/run/docker.sock
 ```
 
-Set `DOCKER_GID` to the reported Docker socket group. The `999` in
-`.env.example` is an example socket group, not the judge user's UID or primary
-GID. Docker Desktop and OrbStack commonly report group `0`. Generate separate
-submission and agent tokens, put both in `.env`, then start the services:
+Set `DOCKER_GID` to that group (`999` in the example is only a placeholder).
+Then, from the committed source checkout:
 
 ```console
-openssl rand -hex 32 # JUDGE_API_TOKEN
-openssl rand -hex 32 # JUDGE_AGENT_TOKEN
-docker compose up -d
+openssl rand -hex 32 # use as JUDGE_API_TOKEN in .env
+docker compose up -d --build
 docker compose ps
+docker compose logs --follow api worker ssh-worker tailscale
 ```
 
-Compose does not publish an API port on the host. The `api` container listens
-on port `8000` internally; configure Dokploy to route to that service and
-port. SQLite and local W&B files live in `judge-data`. The `remote-reporter`
-service publishes remote progress, results, and failure reasons to W&B using
-the master's API key; Nano4 does not need a W&B key. Checked-out CPU
-repositories and result files live under `JUDGE_WORK_ROOT`. The HF and uv
-cache volumes persist local-worker downloads across submissions and restarts.
+Compose does not publish the API on a host port. Configure Dokploy or your
+reverse proxy to reach the `api` service on port `8000`. SQLite and W&B files
+persist in `judge-data`; local CPU caches use the HF and uv cache volumes.
+The SSH worker has neither W&B credentials nor the Docker socket. Remote
+commands receive job configuration, never the submission token, Tailscale
+auth key, or the local W&B key. The local `WANDB_API_KEY` remains necessary for
+CPU reporting and API leaderboard reads.
 
-```console
-docker compose logs --follow api worker remote-reporter
-docker compose restart worker
-docker compose down
+Create `<JUDGE_REMOTE_WORK_ROOT>/.netrc` manually on the remote login node:
+
+```text
+machine api.wandb.ai
+  login judge
+  password YOUR_REMOTE_WANDB_API_KEY
 ```
 
-### Nano4 Slurm sub-judge
+Make it readable by `JUDGE_SSH_USER` and set its permissions to `600`. The
+remote helper reads that exact file without prompting or copying its key into
+job records or submission environments. GPU runs use `WANDB_ENTITY` and
+`WANDB_PROJECT` captured when the API queues each job. The remote login node
+must be able to reach W&B. Reporting failures retry independently, including
+after execution has completed; they do not submit another Slurm job. Trusted
+bootstrap failures use a packaged fallback through `uv run --no-project --with
+wandb` so they can be reported even when the evaluator environment is absent.
 
-The sub-judge runs on the Nano4 login node and makes outbound HTTPS requests
-to the master. It does not run participant code on the login node: after
-checking out the exact submitted commit, it submits the participant's
-`src/labs/<task_id>.sbatch` to Slurm. Put its checkout, agent ledger, job
-workspaces, HF cache, and uv cache on shared `/work` storage visible to the
-H200 compute nodes. The agent needs Python 3.14, `pydantic`, Git, and `uv`;
-the compute job installs its Python environment inside the Slurm allocation.
-For example, from a trusted judge checkout on Nano4:
+### Remote repository setup and recovery
 
-```console
-uv venv --python 3.14 /work/$USER/study-group-oj-agent-venv
-uv pip install --python /work/$USER/study-group-oj-agent-venv/bin/python 'pydantic>=2.13.5'
-export PYTHONPATH=/work/$USER/study-group-online-judge/src
-export JUDGE_TRUSTED_ROOT=/work/$USER/study-group-online-judge
-export JUDGE_WORK_ROOT=/work/$USER/study-group-oj
-export JUDGE_HF_HOME=/work/$USER/study-group-oj/hf-cache
-export JUDGE_UV_CACHE_DIR=/work/$USER/study-group-oj/uv-cache
-export JUDGE_MASTER_URL=https://oj.cerulean.works
-export JUDGE_AGENT_ID=nano4
-export JUDGE_AGENT_TOKEN='paste-the-master-agent-token-here'
-export JUDGE_TASK_IDS='lab2,lab3'
-export JUDGE_MAX_GPUS=8
-export JUDGE_REVISION="$(git -C "$JUDGE_TRUSTED_ROOT" rev-parse HEAD)"
-/work/$USER/study-group-oj-agent-venv/bin/python -m judge.slurm_agent
-```
+The trusted `src/judge/setup-repo.sh` accepts repository URL, an exact commit SHA
+or `latest`, and absolute destination. It locks the destination, clones when absent,
+fetches when present, rejects mismatched origins or dirty checkouts, checks
+out the requested commit (the remote default-branch tip for `latest`), then runs
+`uv sync --no-sources --no-dev`. Participant checkouts always use the exact
+submitted SHA. Ignoring the
+repository's Linux CPU-only PyTorch source resolves CUDA dependencies. The
+script restores `uv.lock` afterward so retries do not mistake setup changes
+for participant changes. Runtime caches live under the remote work root.
 
-Run the agent under a persistent user service or session. Do not put the
-agent token in a participant repository or sbatch file. `JUDGE_SLURM_ACCOUNT`
-defaults to `ACD115198`; `JUDGE_SLURM_GPU_RESOURCE` defaults to `gpu` and can
-be changed after checking Nano4's actual H200 GRES name. The executor requests
-`dev` for jobs up to 4 hours, otherwise `8gpus` up to 48 hours, and enforces
-12 CPU cores and 200 GiB per requested GPU. The sample batch file loads
-`cuda/13.0`, then resolves dependencies on the compute node with
-`uv sync --no-sources --no-dev` to ignore the repository's Linux CPU-only
-PyTorch source while resolving dependencies. A Nano4 development run verified
-the generic `--gres=gpu:1` request, CUDA 13.0, and CUDA-enabled PyTorch on H200.
+Trusted evaluators live in `<work-root>/jobs/<job-id>/judge`. Each new job fetches
+the latest OJ code and prepares its environment there. A durable `judge.ready`
+marker lets reconnects reuse that job's prepared evaluator without changing
+running jobs when upstream advances. Seven-day workspace cleanup also removes
+these evaluator checkouts. Each job has
+`<work-root>/jobs/<job-id>/submission`, `output/setup.log`, `output/slurm.log`,
+and `output/result.json`. W&B SDK and reporting diagnostics are retained under
+`output/wandb` and `output/reporting.log`. GPU batch scripts use the prepared participant
+virtualenv with `PYTHONPATH` pointing at the trusted evaluator source.
+The worker supplies the `JUDGE_*` runner variables and overrides Slurm resource
+limits. Existing `dev`/`8gpus` partition selection and Nano4 GPU limits remain.
 
-The agent records accepted Slurm IDs and pending reports in
-`JUDGE_WORK_ROOT/agent.db`. It sends ordered, retryable events to the master;
-the master stores them before W&B publication. If the agent crashes between
-invoking `sbatch` and recording its response, the outcome is ambiguous and a
-retry is rejected for manual reconciliation rather than risking two GPU jobs.
-There are no periodic agent health checks; a scheduling request fails if no
-agent is actively polling or if its offer is not acknowledged. A temporary
-Nano4 development master and sub-judge completed a Lab 2 GPU submission; the
-production master-to-Nano4 deployment remains unvalidated.
+The remote one-shot helper locks each job and persists its record under
+`<work-root>/job-records/<job-id>.json`, with a copy in the workspace's
+`submission.json`, before and after invoking `sbatch`. Repeated polls reuse its Slurm ID. A restart or
+SSH disconnect resumes preparation or monitoring. Two setup slots and four
+monitoring slots prevent dependency installation from blocking running jobs;
+monitoring repeats every 30 seconds. Logs are read and uploaded on the remote
+node; they are not repeatedly transferred to the local host. Remote report
+offsets are durable, while SQLite stores execution status, results, W&B URLs,
+and pending-report recovery state. An interrupted upload can replay its last
+batch into the same W&B run.
+
+Each invocation of `setup-repo.sh` with `JUDGE_REMOTE_WORK_ROOT` set removes
+finished, successfully reported job workspaces older than seven days, measured
+from their completion time. It skips active or locked jobs, unresolved Slurm
+submissions, and jobs whose W&B uploads are pending. Cleanup runs when setup
+runs, rather than on an idle timer. Small durable job records and locks remain
+outside the deleted workspaces, preventing delayed reconnects from resubmitting
+retired jobs. Shared caches and `.netrc` are kept. Older evaluator checkouts
+under the former `trusted/<judge-revision>` layout are left untouched.
+
+A crash between `sbatch` and recording its response is deliberately treated as
+ambiguous. The job reports an infrastructure error and will not resubmit. Check
+Slurm using the unique job name `judge-<job-id>` and its remote `submission.json`
+record before making a new submission with a new idempotency key. Never retry
+an ambiguous job without confirming whether Slurm accepted it.
+
+Migration 005 removes agent registrations and assignment metadata while
+retaining completed jobs, Slurm IDs, and reporting history. Back up `judge.db`
+with SQLite's backup API before deploying; rollback requires that backup.
+Migration 006 adds recovery state for reports published on the remote node.
+When upgrading the Compose stack, remove the old local `remote-reporter`
+container (`docker compose up -d --build --remove-orphans`) to avoid duplicate
+local and remote W&B publishers.
 
 ### Slack leaderboard notifications
 
