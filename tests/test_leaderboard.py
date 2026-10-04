@@ -104,7 +104,8 @@ def test_notifications_retry_and_restart(tmp_path, monkeypatch):
         source.return_value = [submission(score=2)]
         slack.side_effect = RuntimeError("unavailable")
         service.refresh()
-        assert service.snapshot["labs"][-1]["entries"][0]["score"] == 2
+        lab4 = next(lab for lab in service.snapshot["labs"] if lab["id"] == "lab4")
+        assert lab4["entries"][0]["score"] == 2
         assert "notification_error" in service.snapshot
         service = LeaderboardService(tmp_path / "judge.db")
         slack.side_effect = None
@@ -116,7 +117,8 @@ def test_notifications_retry_and_restart(tmp_path, monkeypatch):
         service.refresh()
         assert service.snapshot["error"]
         assert "secret" not in json.dumps(service.snapshot)
-        assert service.snapshot["labs"][-1]["entries"][0]["score"] == 2
+        lab4 = next(lab for lab in service.snapshot["labs"] if lab["id"] == "lab4")
+        assert lab4["entries"][0]["score"] == 2
 
 
 def test_public_endpoint_keeps_submission_auth(tmp_path, monkeypatch):
@@ -264,4 +266,5 @@ def test_refresh_logs_success_and_ranking_failure(tmp_path, caplog):
             service.refresh()
     assert "stage=rank" in caplog.text
     assert "ValueError: bad ranking input" in caplog.text
-    assert service.snapshot["labs"][-1]["entries"][0]["score"] == 4
+    lab4 = next(lab for lab in service.snapshot["labs"] if lab["id"] == "lab4")
+    assert lab4["entries"][0]["score"] == 4

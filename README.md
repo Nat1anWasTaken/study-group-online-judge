@@ -76,6 +76,36 @@ this routes submissions through the SSH worker to Slurm. Each such submission
 must include `src/labs/<task_id>.sbatch` at its submitted commit. The master
 trusts its own task definitions, while participants can edit their batch file.
 
+### Reusable evaluators
+
+Model scoring lives in `src/judge/evaluators/`, independently of a lab's dataset
+and participant module. An `Evaluator` validates its runtime and implements
+`evaluate(model_id, dataset) -> JudgeResult`. `ModelEvaluationTask` handles the
+participant's `eval_model_id`; its lab subclass supplies `load_dataset()` and
+an evaluator. Labs 4 and 5 share `PerplexityEvaluator`, which can also be called
+directly with a Hugging Face model ID and a `datasets.Dataset` of `text` rows.
+
+The perplexity evaluator supports causal language models loadable by
+`AutoModelForCausalLM` and defaults to the submitted model's tokenizer. Set
+`tokenizer_id` to use a fixed tokenizer for a lab. Lab 4 uses
+`openai-community/gpt2`; Lab 5 evaluates Llama 3.2 models with the tokenizer
+from [`meta-llama/Llama-3.2-1B`](https://huggingface.co/meta-llama/Llama-3.2-1B)
+and batches of eight documents. Set `eval_model_id` in `src/labs/lab5.py` to
+your model's Hugging Face ID. The default token limit is 1,024 per document,
+configurable through `max_length` and capped by the model's declared context
+length. Existing tokenizer padding tokens are preserved; otherwise EOS is
+used for padding. Padding stays on the right and is excluded from scoring.
+
+Perplexity evaluation requires a CUDA GPU and moves all model parameters,
+buffers, and tokenized inputs to `cuda:0`. It verifies logits remain there,
+disables the KV cache, and requires
+[`torch.compile`](https://docs.pytorch.org/docs/2.11/generated/torch.compile.html)
+with the Inductor backend, `fullgraph=True`, and `dynamic=True`. CUDA absence,
+compilation errors, graph breaks, and recompilation-limit exhaustion fail the
+job as infrastructure errors instead of silently switching to CPU or eager
+execution. The runtime check runs before dataset preparation. Compile-capable
+CUDA dependencies and a host C/C++ compiler must be installed on compute nodes.
+
 ### Development
 
 ```console
