@@ -17,7 +17,7 @@ def publish_report(
     workspace: Path,
     record: dict,
 ) -> None:
-    """Advance remote reporting cursors only after W&B finishes successfully.
+    """Flush progress without finishing the server run until judging completes.
 
     The caller holds the remote job lock and durably saves the updated record.
     A failed upload can replay its last batch, but never schedules another job.
@@ -39,13 +39,6 @@ def publish_report(
                 remaining = bool(stream.read(1))
             chunks.append((name, chunk.decode(errors="replace"), offset + len(chunk)))
             snapshot.report_pending |= remaining
-    if (
-        progress.get("state") == state
-        and not any(chunk for _, chunk, _ in chunks)
-        and not terminal
-    ):
-        return
-
     # Use only the work-directory credential, without prompting or writing keys.
     credentials = netrc.netrc(str(Path(request.config.work_root) / ".netrc"))
     authentication = credentials.authenticators("api.wandb.ai")
@@ -53,30 +46,41 @@ def publish_report(
         raise ValueError("Remote .netrc must contain credentials for api.wandb.ai")
     directory = workspace / "output" / "wandb"
     directory.mkdir(parents=True, exist_ok=True)
-    run = wandb.init(
-        project=request.config.wandb_project,
-        entity=request.config.wandb_entity,
-        id=request.job_id,
-        resume="allow",
-        name=f"{request.submission.task_id}-{request.submission.github_actor}-{request.job_id[:8]}",
-        job_type="submission",
-        dir=str(directory),
-        config={
-            "job_id": request.job_id,
-            **request.submission.model_dump(),
-            "resources": request.resources.model_dump(),
-            "execution_backend": "ssh_slurm",
-        },
-        settings=wandb.Settings(
-            api_key=authentication[2],
-            init_timeout=30,
-            finish_timeout=30,
-            finish_timeout_raises=True,
-            mode="online",
-        ),
-        save_code=False,
-    )
+
+    def initialize(*, finalize: bool = False):
+        # Each SSH helper exits after its poll. Keep the server run open while
+        # flushing this process's SDK session, including its implicit atexit.
+        # Resume even idle polls so queued/running jobs continue heartbeating.
+        return wandb.init(
+            project=request.config.wandb_project,
+            entity=request.config.wandb_entity,
+            id=request.job_id,
+            resume="allow",
+            reinit="create_new",
+            name=f"{request.submission.task_id}-{request.submission.github_actor}-{request.job_id[:8]}",
+            job_type="submission",
+            dir=str(directory),
+            config={
+                "job_id": request.job_id,
+                **request.submission.model_dump(),
+                "resources": request.resources.model_dump(),
+                "execution_backend": "ssh_slurm",
+            },
+            settings=wandb.Settings(
+                api_key=authentication[2],
+                init_timeout=30,
+                finish_timeout=30,
+                finish_timeout_raises=True,
+                mode="online",
+                console="wrap",
+                x_update_finish_state=finalize,
+            ),
+            save_code=False,
+        )
+
+    run = initialize()
     try:
+        run.summary["judge_status"] = JobStatus.RUNNING.value
         snapshot.wandb_url = run.url
         progress["url"] = run.url
         if snapshot.slurm_job_id:
@@ -115,5 +119,12 @@ def publish_report(
             progress["complete"] = True
         progress["state"] = state
     finally:
+        # This acknowledges uploaded logs but cannot mark the server run done,
+        # even if publishing the result raised and needs another attempt.
         run.finish()
+    if progress.get("complete"):
+        # All logs and the terminal report are acknowledged before authorizing
+        # a final-state update. A failure here leaves durable cursors unchanged.
+        finalizer = initialize(finalize=True)
+        finalizer.finish(exit_code=1 if snapshot.error is not None else 0)
     record["report"] = progress

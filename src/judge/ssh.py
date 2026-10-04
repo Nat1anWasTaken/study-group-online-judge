@@ -238,7 +238,10 @@ class TailscaleSSH:
         script += (
             package.joinpath("bootstrap_report.py")
             .read_text()
-            .replace("from judge.remote_store import job_lock, save_record", "")
+            .replace(
+                "from judge.remote_store import job_lock, reporting_output, save_record",
+                "",
+            )
         )
         command = shlex.join(
             [

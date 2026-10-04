@@ -2,9 +2,42 @@
 
 import json
 import os
+import sys
 from contextlib import contextmanager
 from fcntl import LOCK_EX, flock
 from pathlib import Path
+
+
+@contextmanager
+def reporting_output(path: Path):
+    """Keep SDK output, including cached streams and child processes, off SSH."""
+    streams = (sys.stdout, sys.stderr, sys.__stdout__, sys.__stderr__)
+    with path.open("a") as log:
+        descriptors = {1, 2}
+        for stream in streams:
+            if stream is not None:
+                stream.flush()
+                try:
+                    descriptors.add(stream.fileno())
+                except OSError, ValueError:
+                    pass
+        originals = {descriptor: os.dup(descriptor) for descriptor in descriptors}
+        try:
+            # W&B patches stream.write on import. Replacing sys.stdout/stderr
+            # bypasses those hooks, leaving metrics uploaded but no console logs.
+            for descriptor in originals:
+                os.dup2(log.fileno(), descriptor)
+            yield
+        finally:
+            try:
+                for stream in streams:
+                    if stream is not None:
+                        stream.flush()
+                log.flush()
+            finally:
+                for descriptor, original in originals.items():
+                    os.dup2(original, descriptor)
+                    os.close(original)
 
 
 def save_record(path: Path, record: dict) -> None:

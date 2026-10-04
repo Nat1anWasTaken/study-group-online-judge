@@ -9,12 +9,11 @@ import netrc
 import os
 import sys
 import time
-from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 
 import wandb
 
-from judge.remote_store import job_lock, save_record
+from judge.remote_store import job_lock, reporting_output, save_record
 
 
 def report_failure(request: dict, error: str) -> dict:
@@ -63,11 +62,7 @@ def report_failure(request: dict, error: str) -> dict:
         output = workspace / "output"
         output.mkdir(parents=True, exist_ok=True)
         save_record(path, record)
-        with (
-            (output / "reporting.log").open("a") as log,
-            redirect_stdout(log),
-            redirect_stderr(log),
-        ):
+        with reporting_output(output / "reporting.log"):
             try:
                 auth = netrc.netrc(str(root / ".netrc")).authenticators("api.wandb.ai")
                 if auth is None or not auth[2]:
@@ -91,6 +86,7 @@ def report_failure(request: dict, error: str) -> dict:
                         finish_timeout=30,
                         finish_timeout_raises=True,
                         mode="online",
+                        console="wrap",
                     ),
                     save_code=False,
                 )
@@ -100,7 +96,7 @@ def report_failure(request: dict, error: str) -> dict:
                     print(f"[judge] {error}", flush=True)
                     snapshot["wandb_url"] = run.url
                 finally:
-                    run.finish()
+                    run.finish(exit_code=1)
                 snapshot["report_pending"] = False
                 record["report"] = {"complete": True, "url": snapshot["wandb_url"]}
             except Exception as failure:  # noqa: BLE001 - retry W&B independently

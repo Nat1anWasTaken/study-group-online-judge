@@ -5,14 +5,16 @@ import os
 import subprocess
 import sys
 import time
-from contextlib import redirect_stderr, redirect_stdout
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from judge.models import JudgeResult
 from judge.remote_reporter import publish_report
-from judge.remote_store import job_lock, save_record
+from judge.remote_store import job_lock, reporting_output, save_record
 from judge.slurm_executor import SlurmExecutor
 from judge.ssh import RemoteRequest, RemoteSnapshot
+
+REPORT_INTERVAL = 30
 
 
 def read_log(path: Path, offset: int) -> tuple[str, int, bool]:
@@ -27,11 +29,7 @@ def read_log(path: Path, offset: int) -> tuple[str, int, bool]:
 
 def report(request, snapshot, workspace, record) -> None:
     """Keep SDK output out of the SSH JSON response and retry failed uploads."""
-    with (
-        (workspace / "output" / "reporting.log").open("a") as log,
-        redirect_stdout(log),
-        redirect_stderr(log),
-    ):
+    with reporting_output(workspace / "output" / "reporting.log"):
         try:
             publish_report(request, snapshot, workspace, record)
             record.pop("report_error", None)
@@ -100,20 +98,38 @@ def handle(request: RemoteRequest) -> RemoteSnapshot:
                             "JUDGE_REMOTE_WORK_ROOT": config.work_root,
                         }
                     )
-                    subprocess.run(
-                        [
-                            "bash",
-                            str(Path(request.trusted_root) / "src/judge/setup-repo.sh"),
-                            request.submission.repo_url,
-                            request.submission.commit_sha,
-                            str(workspace / "submission"),
-                        ],
-                        stdout=log,
-                        stderr=subprocess.STDOUT,
-                        env=environment,
-                        check=True,
-                        timeout=1500,
-                    )
+                    # Dependency setup can outlast W&B's heartbeat timeout.
+                    # Keep reporting while the child runs, under the same job
+                    # lock, without letting another SSH poll submit this job.
+                    with ThreadPoolExecutor(max_workers=1) as preparation:
+                        setup = preparation.submit(
+                            subprocess.run,
+                            [
+                                "bash",
+                                str(
+                                    Path(request.trusted_root)
+                                    / "src/judge/setup-repo.sh"
+                                ),
+                                request.submission.repo_url,
+                                request.submission.commit_sha,
+                                str(workspace / "submission"),
+                            ],
+                            stdout=log,
+                            stderr=subprocess.STDOUT,
+                            env=environment,
+                            check=True,
+                            timeout=1500,
+                        )
+                        while True:
+                            try:
+                                setup.result(timeout=REPORT_INTERVAL)
+                                break
+                            except TimeoutError:
+                                if setup.done():
+                                    setup.result()
+                                    break
+                                report(request, RemoteSnapshot(), workspace, record)
+                                persist()
                 # Validate before entering the ambiguous submission window.
                 executor.build_submit_command(
                     task_id=request.submission.task_id,
