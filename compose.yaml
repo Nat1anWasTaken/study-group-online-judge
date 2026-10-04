@@ -69,7 +69,7 @@ services:
         target: /var/run/docker.sock
 
   tailscale:
-    image: tailscale/tailscale:v1.96.5
+    image: tailscale/tailscale:latest
     restart: unless-stopped
     # Give the root daemon an operator matching the worker's UID. Alpine's
     # passwd database is local to this pre-built container.

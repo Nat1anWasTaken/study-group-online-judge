@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.7
 
-FROM tailscale/tailscale:v1.96.5 AS tailscale
+FROM tailscale/tailscale:latest AS tailscale
 
 FROM python:3.14-slim AS base
 

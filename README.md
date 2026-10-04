@@ -117,11 +117,14 @@ Required remote settings:
 - `JUDGE_REPO_URL`: trusted HTTPS GitHub repository; defaults to this repository.
 - `JUDGE_SLURM_ACCOUNT`: defaults to `ACD115198`.
 - `JUDGE_SLURM_GPU_RESOURCE`: defaults to `gpu`.
-- `TS_AUTHKEY`: auth key for the Compose Tailscale node.
+- `TS_AUTHKEY`: auth key for the Compose Tailscale node, generated with
+  **Generate auth key** in the Tailscale admin console. Use the complete
+  `tskey-auth-...` value, rather than an API access token.
 - `TS_HOSTNAME`: defaults to `study-group-online-judge`.
 
 The official Tailscale image and the CLI copied into the judge image both use
-`v1.96.5`. Tailscale runs in userspace mode without `/dev/net/tun` or network
+`v1.102.4`. Keep these two versions aligned when upgrading. Tailscale runs in
+userspace mode without `/dev/net/tun` or network
 capabilities. Its identity persists in `tailscale-state`. Only the SSH worker
 mounts its socket; the sidecar's operator user matches the worker UID `10001`.
 The worker uses `tailscale ssh`, which authenticates through tailnet identity
