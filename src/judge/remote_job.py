@@ -5,12 +5,11 @@ import os
 import subprocess
 import sys
 import time
-from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 
 from judge.models import JudgeResult
 from judge.remote_reporter import publish_report
-from judge.remote_store import job_lock, save_record
+from judge.remote_store import job_lock, reporting_output, save_record
 from judge.slurm_executor import SlurmExecutor
 from judge.ssh import RemoteRequest, RemoteSnapshot
 
@@ -27,11 +26,7 @@ def read_log(path: Path, offset: int) -> tuple[str, int, bool]:
 
 def report(request, snapshot, workspace, record) -> None:
     """Keep SDK output out of the SSH JSON response and retry failed uploads."""
-    with (
-        (workspace / "output" / "reporting.log").open("a") as log,
-        redirect_stdout(log),
-        redirect_stderr(log),
-    ):
+    with reporting_output(workspace / "output" / "reporting.log"):
         try:
             publish_report(request, snapshot, workspace, record)
             record.pop("report_error", None)

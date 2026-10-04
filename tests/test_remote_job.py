@@ -1,15 +1,13 @@
-import io
 import json
 import subprocess
 import tempfile
 import unittest
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import redirect_stdout
 from pathlib import Path
 from unittest.mock import Mock, patch
 
 from judge.models import Resources, Submission
-from judge.remote_job import handle, main, read_log
+from judge.remote_job import handle, read_log
 from judge.slurm_executor import SlurmState
 from judge.ssh import RemoteConfig, RemoteRequest
 
@@ -205,18 +203,38 @@ class RemoteJobTests(unittest.TestCase):
         self.submit.assert_called_once()
 
     def test_reporter_console_output_never_corrupts_ssh_json(self):
-        def publish(request, snapshot, workspace, record):
-            print("W&B console output")
-            self.publish(request, snapshot, workspace, record)
+        import sys
 
-        self.reporting.side_effect = publish
-        stream = io.StringIO()
-        with (
-            patch("sys.stdin", io.StringIO(self.request.model_dump_json())),
-            redirect_stdout(stream),
-        ):
-            main()
-        self.assertEqual(json.loads(stream.getvalue())["slurm_job_id"], "12345")
+        script = """
+import json
+import os
+import sys
+from pathlib import Path
+from unittest.mock import patch
+from judge.remote_job import report
+from judge.ssh import RemoteRequest, RemoteSnapshot
+
+request = RemoteRequest.model_validate_json(sys.argv[1])
+workspace = Path(request.config.work_root) / 'jobs' / request.job_id
+(workspace / 'output').mkdir(parents=True)
+snapshot = RemoteSnapshot(slurm_job_id='12345')
+def publish(*args):
+    print('W&B console output')
+    os.write(1, b'cached SDK output\\n')
+with patch('judge.remote_job.publish_report', side_effect=publish):
+    report(request, snapshot, workspace, {'state': 'preparing'})
+print(snapshot.model_dump_json())
+"""
+        with subprocess.Popen(
+            [sys.executable, "-c", script, self.request.model_dump_json()],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        ) as process:
+            stdout, stderr = process.communicate(timeout=30)
+        self.assertEqual(process.returncode, 0, stderr)
+        self.assertEqual(json.loads(stdout)["slurm_job_id"], "12345")
+        self.assertEqual(stderr, "")
         self.assertIn("W&B console output", (self.output / "reporting.log").read_text())
 
     def test_accounting_delay_is_retryable(self):

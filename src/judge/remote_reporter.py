@@ -73,6 +73,7 @@ def publish_report(
             finish_timeout=30,
             finish_timeout_raises=True,
             mode="online",
+            console="wrap",
         ),
         save_code=False,
     )

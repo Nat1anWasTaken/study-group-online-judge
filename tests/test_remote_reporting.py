@@ -52,6 +52,7 @@ class RemoteReportingTests(unittest.TestCase):
         self.assertEqual(settings.api_key, "remote-test-key")
         self.assertEqual(settings.finish_timeout, 30)
         self.assertTrue(settings.finish_timeout_raises)
+        self.assertEqual(settings.console, "wrap")
         self.assertEqual(self.init.call_args.kwargs["id"], self.request.job_id)
         self.assertNotIn("api_key", self.init.call_args.kwargs["config"])
 
