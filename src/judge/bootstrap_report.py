@@ -96,7 +96,7 @@ def report_failure(request: dict, error: str) -> dict:
                     print(f"[judge] {error}", flush=True)
                     snapshot["wandb_url"] = run.url
                 finally:
-                    run.finish()
+                    run.finish(exit_code=1)
                 snapshot["report_pending"] = False
                 record["report"] = {"complete": True, "url": snapshot["wandb_url"]}
             except Exception as failure:  # noqa: BLE001 - retry W&B independently

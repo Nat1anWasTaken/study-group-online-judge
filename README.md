@@ -225,6 +225,15 @@ offsets are durable, while SQLite stores execution status, results, W&B URLs,
 and pending-report recovery state. An interrupted upload can replay its last
 batch into the same W&B run.
 
+W&B runs remain running during setup, queueing, and execution, including idle
+monitoring polls. Each short-lived SSH helper resumes the same run ID and flushes
+its SDK session with `x_update_finish_state=False`, preserving console uploads
+and durable reporting cursors without marking the server run finished. Only
+after the terminal report and all logs upload successfully does a final session
+mark the run finished (or failed for infrastructure errors). Reporting failures
+leave the run available for retry. CPU workers keep their run open until execution
+completes.
+
 Each invocation of `setup-repo.sh` with `JUDGE_REMOTE_WORK_ROOT` set removes
 finished, successfully reported job workspaces older than seven days, measured
 from their completion time. It skips active or locked jobs, unresolved Slurm

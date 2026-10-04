@@ -4,6 +4,7 @@ import tempfile
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from threading import Event
 from unittest.mock import Mock, patch
 
 from judge.models import Resources, Submission
@@ -106,6 +107,48 @@ class RemoteJobTests(unittest.TestCase):
         self.assertIn("CalledProcessError", handle(self.request).error or "")
         self.setup_process.assert_called_once()
         self.submit.assert_not_called()
+
+    def test_slow_setup_keeps_reporting_before_sbatch(self):
+        waiting = Event()
+        resumed = Event()
+
+        def slow_setup(command, **kwargs):
+            waiting.set()
+            if not resumed.wait(timeout=5):
+                raise RuntimeError("heartbeat never arrived")
+            return self.setup_repository(command, **kwargs)
+
+        def heartbeat(request, snapshot, workspace, record):
+            self.publish(request, snapshot, workspace, record)
+            if waiting.is_set() and not resumed.is_set():
+                self.submit.assert_not_called()
+                self.assertEqual(record["state"], "preparing")
+                resumed.set()
+
+        self.setup_process.side_effect = slow_setup
+        self.reporting.side_effect = heartbeat
+        with patch("judge.remote_job.REPORT_INTERVAL", 0.01):
+            self.assertEqual(handle(self.request).slurm_job_id, "12345")
+        self.assertTrue(resumed.is_set())
+        self.assertGreaterEqual(self.reporting.call_count, 3)
+        self.submit.assert_called_once()
+
+    def test_setup_finishing_at_heartbeat_deadline_is_not_a_failure(self):
+        future = Mock()
+        future.result.side_effect = [TimeoutError, None]
+        future.done.return_value = True
+
+        def already_finished(function, *args, **kwargs):
+            function(*args, **kwargs)
+            return future
+
+        with patch("judge.remote_job.ThreadPoolExecutor") as preparation:
+            pool = preparation.return_value.__enter__.return_value
+            pool.submit.side_effect = already_finished
+            snapshot = handle(self.request)
+        self.assertIsNone(snapshot.error)
+        self.assertEqual(snapshot.slurm_job_id, "12345")
+        self.submit.assert_called_once()
 
     def test_missing_script_and_invalid_resources_fail_before_sbatch(self):
         self.setup_process.side_effect = lambda *args, **kwargs: Mock(returncode=0)

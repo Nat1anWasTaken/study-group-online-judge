@@ -44,6 +44,7 @@ class BootstrapReportTests(unittest.TestCase):
             json.loads(self.path.read_text())["finished_at"], original_time
         )
         self.assertEqual(self.run_mock.summary["error"], "Trusted setup failed")
+        self.run_mock.finish.assert_called_once_with(exit_code=1)
         self.init.reset_mock()
         self.assertEqual(report_failure(self.request, "repeated"), success)
         self.init.assert_not_called()
