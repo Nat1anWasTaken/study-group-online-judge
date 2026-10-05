@@ -76,6 +76,74 @@ this routes submissions through the SSH worker to Slurm. Each such submission
 must include `src/labs/<task_id>.sbatch` at its submitted commit. The master
 trusts its own task definitions, while participants can edit their batch file.
 
+### Reusable evaluators
+
+Model scoring lives in `src/judge/evaluators/`, independently of a lab's dataset
+and participant module. An `Evaluator` validates its runtime and implements
+`evaluate(model_id, dataset) -> JudgeResult`. `ModelEvaluationTask` handles the
+participant's `eval_model_id`; its lab subclass supplies `load_dataset()` and
+an evaluator. Labs 4 and 5 share `PerplexityEvaluator`, which can also be called
+directly with a Hugging Face model ID and a `datasets.Dataset` of `text` rows.
+
+The perplexity evaluator supports causal language models loadable by
+`AutoModelForCausalLM` and defaults to the submitted model's tokenizer. Set
+`tokenizer_id` to use a fixed tokenizer for a lab. Lab 4 uses
+`openai-community/gpt2`; Lab 5 evaluates Llama 3.2 models with the tokenizer
+from [`meta-llama/Llama-3.2-1B`](https://huggingface.co/meta-llama/Llama-3.2-1B)
+and batches of one document with an 8,192-token limit. The generic evaluator
+defaults to 1,024 tokens, configurable through `max_length` and capped by the
+model's declared context length. Existing tokenizer padding tokens are preserved;
+otherwise EOS is used for padding. Padding stays on the right and is excluded
+from scoring.
+
+### Lab 5 submission
+
+Shuffle the entire `train` split of `allenai/dolma3_mix-150B-1025` with seed 42
+and reserve the last **50,000 documents** before tokenization or packing. Exclude
+all of those documents from training. Participants may use at most **10,000**
+of them for periodic validation. The OJ evaluates all 50,000, truncating each
+document to its first 8,192 tokenizer tokens; it does not pack documents or use
+sliding windows. The corpus score weights each non-padding next-token target
+equally, with document p90/p99 reported separately.
+
+Train the Llama 3.2 1B architecture from randomly initialized weights with an
+8,192-token training context. Upload both weights and tokenizer to Hugging Face.
+Fill `eval_model_id`, `training_run_url`, and `training_config` in
+`src/labs/lab5.py`. Include optimizer parameter groups, hyperparameters, and
+schedules, plus actual non-padding tokens seen (counting repeats), run duration,
+GPU allocation, and the number of holdout documents used for validation.
+
+The OJ checks the submitted architecture and RoPE settings against the published
+Llama 3.2 1B configuration, requires support for at least 8,192 context tokens,
+and checks the uploaded tokenizer's vocabulary and BOS/EOS IDs. It validates the
+reported training configuration and requires a run URL in `lab5-training-llama`.
+It includes that evidence in judge logs/results for organizer review.
+
+Training provenance is reviewed using the linked run and training code: random
+initialization, holdout exclusion, correct token accounting, the assigned token,
+H200, and duration limits, and training logs. Those limits are the organizer's
+training allocation; the OJ's one-GPU/four-hour resources apply to evaluation.
+The specification's three allocation placeholders must be filled by the organizer;
+the OJ does not invent or enforce unspecified training limits.
+
+Log `train/loss` as the average over `logging_steps`. Log `train/grad_norm`,
+`train/learning_rate`, `train/tokens_per_second`, and `train/total_tokens_seen`
+at the reported training step, rather than averaging them over the logging
+interval. Log `eval/perplexity` at least once every 10% of planned training steps.
+The organizer reviews these metrics and cadence; the OJ does not fetch W&B
+training history or treat self-reported configuration as proof of compliance.
+Submit a training run before October 9, 2026; the full lab is due October 20, 2026.
+
+Perplexity evaluation requires a CUDA GPU and moves all model parameters,
+buffers, and tokenized inputs to `cuda:0`. It verifies logits remain there,
+disables the KV cache, and requires
+[`torch.compile`](https://docs.pytorch.org/docs/2.11/generated/torch.compile.html)
+with the Inductor backend, `fullgraph=True`, and `dynamic=True`. CUDA absence,
+compilation errors, graph breaks, and recompilation-limit exhaustion fail the
+job as infrastructure errors instead of silently switching to CPU or eager
+execution. The runtime check runs before dataset preparation. Compile-capable
+CUDA dependencies and a host C/C++ compiler must be installed on compute nodes.
+
 ### Development
 
 ```console
