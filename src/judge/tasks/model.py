@@ -2,6 +2,7 @@ import sys
 import traceback
 from abc import abstractmethod
 from pathlib import Path
+from types import ModuleType
 from typing import ClassVar
 
 import torch
@@ -21,6 +22,12 @@ class ModelEvaluationTask(Task):
     def load_dataset(self) -> Dataset:
         """Load and select this lab's evaluation documents."""
 
+    def validate_submission(
+        self, module: ModuleType, model_id: str
+    ) -> list[TestResult]:
+        """Validate lab-specific requirements before preparing evaluation data."""
+        return []
+
     def evaluate(self, submission: Path) -> JudgeResult:
         # Check before downloading data or importing participant code. Runtime
         # failures are infrastructure errors, not participant test failures.
@@ -29,7 +36,8 @@ class ModelEvaluationTask(Task):
         print(f"[{self.id}] loading src/labs/{self.id}.py", flush=True)
         sys.path.insert(0, str(submission / "src"))
         try:
-            model_id = load_student_function(submission, self.id).eval_model_id
+            module = load_student_function(submission, self.id)
+            model_id = module.eval_model_id
         except Exception as error:  # noqa: BLE001 - participant failures are test failures
             traceback.print_exc(file=sys.stdout)
             return JudgeResult(
@@ -56,4 +64,19 @@ class ModelEvaluationTask(Task):
                     )
                 ],
             )
-        return self.evaluator.evaluate(model_id, self.load_dataset())
+        try:
+            checks = self.validate_submission(module, model_id)
+        except ValueError as error:
+            return JudgeResult(
+                passed=False,
+                tests=[
+                    TestResult(
+                        name="submission_requirements", passed=False, message=str(error)
+                    )
+                ],
+            )
+        for check in checks:
+            print(f"[{self.id}] {check.name}: {check.message}", flush=True)
+        result = self.evaluator.evaluate(model_id, self.load_dataset())
+        result.tests.extend(checks)
+        return result
