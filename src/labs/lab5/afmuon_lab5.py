@@ -61,7 +61,11 @@ def finite_cap_direction(momentum, cap, bisection_steps):
 
 
 class AFMuon(torch.optim.Optimizer):
-    def __init__(self, model, config):
+    def __init__(
+        self, model, *, muon_lr, vector_lr, momentum, matrix_weight_decay,
+        ns_steps, tied_cap, tied_scale, rho_hidden, rho_output,
+        oracle_chunk_rows, oracle_bisection_steps, eps,
+    ):
         tied_embedding = model.get_input_embeddings().weight
         assert model.get_output_embeddings().weight is tied_embedding
         matrices, vectors = [], []
@@ -75,15 +79,20 @@ class AFMuon(torch.optim.Optimizer):
                 vectors.append(parameter)
 
         tied_learning_rate = (
-            config["muon_lr"] * config["rho_output"] / config["rho_hidden"]
-            * config["tied_scale"] / tied_embedding.shape[1]
+            muon_lr * rho_output / rho_hidden * tied_scale / tied_embedding.shape[1]
         )
         super().__init__([
-            {"params": matrices, "role": "matrix", "lr": config["muon_lr"]},
+            {"params": matrices, "role": "matrix", "lr": muon_lr},
             {"params": [tied_embedding], "role": "tied", "lr": tied_learning_rate},
-            {"params": vectors, "role": "vector", "lr": config["vector_lr"]},
+            {"params": vectors, "role": "vector", "lr": vector_lr},
         ], {})
-        self.config = config
+        self.momentum = momentum
+        self.matrix_weight_decay = matrix_weight_decay
+        self.ns_steps = ns_steps
+        self.tied_cap = tied_cap
+        self.oracle_chunk_rows = oracle_chunk_rows
+        self.oracle_bisection_steps = oracle_bisection_steps
+        self.eps = eps
         for group in self.param_groups:
             group["peak_lr"] = group["lr"]
 
@@ -93,8 +102,6 @@ class AFMuon(torch.optim.Optimizer):
         if closure is not None:
             with torch.enable_grad():
                 loss = closure()
-        config = self.config
-
         for group in self.param_groups:
             for parameter in group["params"]:
                 assert parameter.grad is not None
@@ -105,22 +112,22 @@ class AFMuon(torch.optim.Optimizer):
 
                 if group["role"] == "matrix":
                     direction = polar_direction(
-                        parameter.grad, momentum, config["momentum"], config["ns_steps"]
+                        parameter.grad, momentum, self.momentum, self.ns_steps
                     )
-                    parameter.mul_(1 - group["lr"] * config["matrix_weight_decay"])
+                    parameter.mul_(1 - group["lr"] * self.matrix_weight_decay)
                     parameter.add_(direction, alpha=-group["lr"])
                     continue
 
-                momentum.mul_(config["momentum"]).add_(parameter.grad)
+                momentum.mul_(self.momentum).add_(parameter.grad)
                 if group["role"] == "vector":
-                    rms = momentum.square().mean().sqrt().clamp_min(config["eps"])
+                    rms = momentum.square().mean().sqrt().clamp_min(self.eps)
                     parameter.add_(momentum / rms, alpha=-group["lr"])
                 else:
-                    for start in range(0, len(parameter), config["oracle_chunk_rows"]):
-                        stop = start + config["oracle_chunk_rows"]
+                    for start in range(0, len(parameter), self.oracle_chunk_rows):
+                        stop = start + self.oracle_chunk_rows
                         direction = finite_cap_direction(
-                            momentum[start:stop], config["tied_cap"],
-                            config["oracle_bisection_steps"],
+                            momentum[start:stop], self.tied_cap,
+                            self.oracle_bisection_steps,
                         )
                         parameter[start:stop].add_(direction, alpha=-group["lr"])
         return loss

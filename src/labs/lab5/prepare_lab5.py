@@ -6,8 +6,6 @@ from pathlib import Path
 from datasets import Dataset, Features, Sequence, Value, load_dataset
 from transformers import AutoConfig, AutoTokenizer
 
-from train_lab5 import CONFIG
-
 
 def pack_documents(worker_ids, documents, tokenizer_path, workers, blocks, length):
     tokenizer = AutoTokenizer.from_pretrained(tokenizer_path, local_files_only=True)
@@ -49,74 +47,76 @@ def main():
     hostname = socket.gethostname().split(".")[0]
     assert hostname == os.environ["SLURMD_NODENAME"].split(".")[0]
 
-    config = CONFIG
     output_dir = Path(os.environ.get(
         "LAB5_DATA", "/home/nat1andotxyz/lab5/dolma-seed42-8192-v1"
     ))
     cache_dir = Path(os.environ["LAB5_CACHE"])
     assert not output_dir.exists() or not any(output_dir.iterdir())
-    assert 0 < config["prepare_tokens"] <= 6_000_000_000
-    assert 0 < config["eval_documents"] <= config["holdout_documents"] // 5
+    assert 0 < 6000000000 <= 6_000_000_000
+    assert 0 < 1024 <= 50000 // 5
     output_dir.mkdir(parents=True, exist_ok=True)
 
     tokenizer = AutoTokenizer.from_pretrained(
-        config["model_id"], revision=config["model_revision"]
+        "meta-llama/Llama-3.2-1B", revision="4e20de362430cd3b72f300e6b0f18e50e7166e08"
     )
     tokenizer.pad_token = tokenizer.eos_token
     tokenizer.save_pretrained(output_dir / "tokenizer")
     model_config = AutoConfig.from_pretrained(
-        config["model_id"], revision=config["model_revision"]
+        "meta-llama/Llama-3.2-1B", revision="4e20de362430cd3b72f300e6b0f18e50e7166e08"
     )
     model_config.save_pretrained(output_dir / "model-config")
 
     workers = min(24, int(os.environ["SLURM_CPUS_PER_TASK"]))
     documents = load_dataset(
-        config["dataset_id"], revision=config["dataset_revision"], split="train",
+        "allenai/dolma3_mix-150B-1025",
+        revision="afa92bfb22366821c5e6cd427cdd036b34b713ef", split="train",
         cache_dir=str(cache_dir / "datasets"), num_proc=workers,
     )
-    documents = documents.shuffle(seed=config["seed"])
-    training_end = len(documents) - config["holdout_documents"]
+    documents = documents.shuffle(seed=42)
+    training_end = len(documents) - 50000
     assert training_end > 0
     training_documents = documents.select(range(training_end)).select_columns(["text"])
     heldout_documents = documents.select(range(training_end, len(documents)))
-    evaluation_documents = heldout_documents.select(range(config["eval_documents"]))
+    evaluation_documents = heldout_documents.select(range(1024))
     heldout_rows = documents._indices.column(0).slice(training_end).to_pylist()
     (output_dir / "holdout-source-rows.json").write_text(json.dumps(heldout_rows))
 
     evaluation_data = evaluation_documents.map(
         lambda batch: tokenizer(
             batch["text"], add_special_tokens=True, truncation=True,
-            max_length=config["sequence_length"], return_attention_mask=False,
+            max_length=8192, return_attention_mask=False,
         ),
         batched=True, remove_columns=evaluation_documents.column_names,
     )
     evaluation_data.save_to_disk(output_dir / "eval")
 
-    total_blocks = config["prepare_tokens"] // config["sequence_length"]
+    total_blocks = 6000000000 // 8192
     assert total_blocks >= workers
     training_data = Dataset.from_generator(
         pack_documents,
         gen_kwargs={
             "worker_ids": list(range(workers)), "documents": training_documents,
             "tokenizer_path": str(output_dir / "tokenizer"), "workers": workers,
-            "blocks": total_blocks, "length": config["sequence_length"],
+            "blocks": total_blocks, "length": 8192,
         },
         num_proc=workers, cache_dir=str(cache_dir / "packed"),
         features=Features({
-            "input_ids": Sequence(Value("int32"), length=config["sequence_length"])
+            "input_ids": Sequence(Value("int32"), length=8192)
         }),
     )
     assert len(training_data) == total_blocks
     training_data.save_to_disk(output_dir / "train", max_shard_size="1GB")
 
     manifest = {
-        "dataset_id": config["dataset_id"], "dataset_revision": config["dataset_revision"],
-        "model_id": config["model_id"], "model_revision": config["model_revision"],
-        "shuffle_seed": config["seed"], "raw_documents": len(documents),
-        "holdout_documents": config["holdout_documents"],
-        "eval_documents": len(evaluation_data), "sequence_length": config["sequence_length"],
+        "dataset_id": "allenai/dolma3_mix-150B-1025",
+        "dataset_revision": "afa92bfb22366821c5e6cd427cdd036b34b713ef",
+        "model_id": "meta-llama/Llama-3.2-1B",
+        "model_revision": "4e20de362430cd3b72f300e6b0f18e50e7166e08",
+        "shuffle_seed": 42, "raw_documents": len(documents),
+        "holdout_documents": 50000,
+        "eval_documents": len(evaluation_data), "sequence_length": 8192,
         "training_blocks": len(training_data),
-        "prepared_tokens": len(training_data) * config["sequence_length"],
+        "prepared_tokens": len(training_data) * 8192,
     }
     (output_dir / "manifest.json").write_text(json.dumps(manifest, indent=2))
     print(json.dumps(manifest), flush=True)
