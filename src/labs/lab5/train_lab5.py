@@ -12,7 +12,6 @@ from pathlib import Path
 
 import numpy as np
 import torch
-import torch._dynamo.config
 import torch.distributed as dist
 import torch.nn.functional as F
 import wandb
@@ -21,10 +20,20 @@ from datasets import load_from_disk
 from torch.nn.parallel import DistributedDataParallel
 from torch.utils.data import DataLoader, DistributedSampler
 from transformers import AutoConfig, AutoTokenizer, LlamaForCausalLM, set_seed
-from transformers.modeling_flash_attention_utils import logger as flash_attention_logger
+from transformers.integrations.flash_attention import (
+    flash_attention_forward as hf_flash_attention_forward,
+)
+from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS
 
-# This warning has no tensor effects; keep FA2's dtype conversion in the graph.
-torch._dynamo.config.ignore_logging_functions.add(flash_attention_logger.warning_once)
+
+def flash_attention_with_matching_dtype(module, query, key, value, attention_mask, **kwargs):
+    return hf_flash_attention_forward(
+        module, query.to(value.dtype), key.to(value.dtype), value,
+        attention_mask, **kwargs,
+    )
+
+
+ALL_ATTENTION_FUNCTIONS.register("flash_attention_2", flash_attention_with_matching_dtype)
 
 experiment_name = (
     "afmuon-oracle-rho50-3000-tiedcap3-scale0.5-mlr0.02-vlr0.0003-b262144-s42"
@@ -32,14 +41,20 @@ experiment_name = (
 
 
 class TrainingLoss(torch.nn.Module):
-    """Keep the large vocabulary logits inside the compiled loss graph."""
-
     def __init__(self, model):
         super().__init__()
         self.model = model
 
     def forward(self, input_ids):
-        return self.model(input_ids=input_ids, labels=input_ids, use_cache=False).loss
+        batch_size, sequence_length = input_ids.shape
+        cu_seq_lens = torch.arange(
+            batch_size + 1, device=input_ids.device, dtype=torch.int32,
+        ) * sequence_length
+        return self.model(
+            input_ids=input_ids, labels=input_ids, use_cache=False,
+            cu_seq_lens_q=cu_seq_lens, cu_seq_lens_k=cu_seq_lens,
+            max_length_q=sequence_length, max_length_k=sequence_length,
+        ).loss
 
 
 @torch.compile(fullgraph=True, dynamic=True)
@@ -186,103 +201,61 @@ def main():
     eval_seconds = 600
     if rank == 0:
         output_dir.mkdir(parents=True, exist_ok=True)
+        training_config = {
+            "dataset_id": "allenai/dolma3_mix-150B-1025",
+            "dataset_revision": "afa92bfb22366821c5e6cd427cdd036b34b713ef",
+            "model_id": "meta-llama/Llama-3.2-1B",
+            "model_revision": "4e20de362430cd3b72f300e6b0f18e50e7166e08",
+            "seed": 42,
+            "holdout_documents": 50000,
+            "eval_documents": 1024,
+            "sequence_length": 8192,
+            "max_train_tokens": 6000000000,
+            "micro_batch_size": 1,
+            "gradient_accumulation_steps": 4,
+            "muon_lr": 0.02,
+            "vector_lr": 0.0003,
+            "momentum": 0.95,
+            "matrix_weight_decay": 0.1,
+            "ns_steps": 5,
+            "tied_cap": 3.0,
+            "tied_scale": 0.5,
+            "rho_hidden": 50.0,
+            "rho_output": 3000.0,
+            "oracle_chunk_rows": 2048,
+            "oracle_bisection_steps": 32,
+            "eps": 1e-8,
+            "max_grad_norm": 1.0,
+            "warmup_tokens": 50000000,
+            "schedule": "warmup_constant",
+            "logging_steps": 10,
+            "eval_steps": eval_steps,
+            "eval_seconds": eval_seconds,
+            "allocation_seconds": allocation_seconds,
+            "finalize_reserve_seconds": 600,
+            "max_h200_hours": 64,
+            "attention_implementation": "flash_attention_2",
+            "gradient_checkpointing": False,
+            "torch_compile": True,
+            "world_size": world_size,
+            "wandb_project": "lab5-training-llama",
+            "optimizer_reference": "https://arxiv.org/abs/2610.01395",
+            "optimizer_reference_commit": "2589a530d8a0e99cac2d9f5082a54e31e9146118",
+            "effective_batch_tokens": tokens_per_step,
+            "model_config": model_config.to_dict(),
+            "data_manifest": manifest,
+        }
         run = wandb.init(
             project="lab5-training-llama",
             name=output_dir.name,
-            config={
-                "dataset_id": "allenai/dolma3_mix-150B-1025",
-                "dataset_revision": "afa92bfb22366821c5e6cd427cdd036b34b713ef",
-                "model_id": "meta-llama/Llama-3.2-1B",
-                "model_revision": "4e20de362430cd3b72f300e6b0f18e50e7166e08",
-                "seed": 42,
-                "holdout_documents": 50000,
-                "eval_documents": 1024,
-                "sequence_length": 8192,
-                "max_train_tokens": 6000000000,
-                "micro_batch_size": 1,
-                "gradient_accumulation_steps": 4,
-                "muon_lr": 0.02,
-                "vector_lr": 0.0003,
-                "momentum": 0.95,
-                "matrix_weight_decay": 0.1,
-                "ns_steps": 5,
-                "tied_cap": 3.0,
-                "tied_scale": 0.5,
-                "rho_hidden": 50.0,
-                "rho_output": 3000.0,
-                "oracle_chunk_rows": 2048,
-                "oracle_bisection_steps": 32,
-                "eps": 1e-8,
-                "max_grad_norm": 1.0,
-                "warmup_tokens": 50000000,
-                "schedule": "warmup_constant",
-                "logging_steps": 10,
-                "eval_steps": eval_steps,
-                "eval_seconds": eval_seconds,
-                "allocation_seconds": allocation_seconds,
-                "finalize_reserve_seconds": 600,
-                "max_h200_hours": 64,
-                "attention_implementation": "flash_attention_2",
-                "gradient_checkpointing": False,
-                "torch_compile": True,
-                "world_size": world_size,
-                "wandb_project": "lab5-training-llama",
-                "optimizer_reference": "https://arxiv.org/abs/2610.01395",
-                "optimizer_reference_commit": "2589a530d8a0e99cac2d9f5082a54e31e9146118",
-                "effective_batch_tokens": tokens_per_step,
-                "model_config": model_config.to_dict(),
-                "data_manifest": manifest,
-            },
+            config=training_config,
             dir=str(output_dir),
         )
         wandb.define_metric("train/total_tokens_seen")
         wandb.define_metric("train/*", step_metric="train/total_tokens_seen")
         wandb.define_metric("eval/*", step_metric="train/total_tokens_seen")
         (output_dir / "training-config.json").write_text(
-            json.dumps(
-                {
-                    "dataset_id": "allenai/dolma3_mix-150B-1025",
-                    "dataset_revision": "afa92bfb22366821c5e6cd427cdd036b34b713ef",
-                    "model_id": "meta-llama/Llama-3.2-1B",
-                    "model_revision": "4e20de362430cd3b72f300e6b0f18e50e7166e08",
-                    "seed": 42,
-                    "holdout_documents": 50000,
-                    "eval_documents": 1024,
-                    "sequence_length": 8192,
-                    "max_train_tokens": 6000000000,
-                    "micro_batch_size": 1,
-                    "gradient_accumulation_steps": 4,
-                    "muon_lr": 0.02,
-                    "vector_lr": 0.0003,
-                    "momentum": 0.95,
-                    "matrix_weight_decay": 0.1,
-                    "ns_steps": 5,
-                    "tied_cap": 3.0,
-                    "tied_scale": 0.5,
-                    "rho_hidden": 50.0,
-                    "rho_output": 3000.0,
-                    "oracle_chunk_rows": 2048,
-                    "oracle_bisection_steps": 32,
-                    "eps": 1e-8,
-                    "max_grad_norm": 1.0,
-                    "warmup_tokens": 50000000,
-                    "schedule": "warmup_constant",
-                    "logging_steps": 10,
-                    "eval_steps": eval_steps,
-                    "eval_seconds": eval_seconds,
-                    "allocation_seconds": allocation_seconds,
-                    "finalize_reserve_seconds": 600,
-                    "max_h200_hours": 64,
-                    "attention_implementation": "flash_attention_2",
-                    "gradient_checkpointing": False,
-                    "torch_compile": True,
-                    "world_size": world_size,
-                    "wandb_project": "lab5-training-llama",
-                    "optimizer_reference": "https://arxiv.org/abs/2610.01395",
-                    "optimizer_reference_commit": "2589a530d8a0e99cac2d9f5082a54e31e9146118",
-                },
-                indent=2,
-            )
+            json.dumps(training_config, indent=2)
         )
         print(run.url, flush=True)
 
@@ -293,7 +266,6 @@ def main():
     interval_loss = torch.zeros((), dtype=torch.float64, device=device)
 
     def save_progress():
-        """Publish a complete checkpoint before any rank continues training."""
         rng_state = {
             "python": random.getstate(),
             "numpy": np.random.get_state(),
@@ -337,8 +309,6 @@ def main():
             (staging / "result.json").write_text(json.dumps(result, indent=2))
             checkpoint = checkpoints / f"step-{completed_steps:08d}"
             staging.rename(checkpoint)
-            # All exported paths follow one pointer, replaced only after every
-            # checkpoint file has been written successfully.
             for name in ("model", "optimizer.pt", "result.json"):
                 exported = output_dir / name
                 if not exported.is_symlink():
