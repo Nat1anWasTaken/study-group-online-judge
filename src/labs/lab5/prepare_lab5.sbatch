@@ -11,6 +11,7 @@
 #SBATCH --output=logs/lab5-prepare-%j.out
 #SBATCH --error=logs/lab5-prepare-%j.err
 
+# The dev partition requires a GPU allocation even for CPU-only preparation.
 set -euo pipefail
 cd "$SLURM_SUBMIT_DIR"
 export LAB5_DATA="${LAB5_DATA:-/home/nat1andotxyz/lab5/dolma-seed42-8192-v1}"
@@ -18,9 +19,10 @@ export UV_PROJECT_ENVIRONMENT="$PWD/work/lab4-fa2-env"
 export TOKENIZERS_PARALLELISM=false
 export OMP_NUM_THREADS=1
 export MKL_NUM_THREADS=1
+export HF_HUB_DISABLE_XET=1
 srun --ntasks=1 --cpus-per-task="$SLURM_CPUS_PER_TASK" bash -s <<'EOF_COMPUTE'
 set -euo pipefail
-export LAB5_CACHE="$(mktemp -d /tmp/lab5-prepare-$SLURM_JOB_ID-XXXXXX)"
+export LAB5_CACHE="${LAB5_PREPARE_CACHE:-$(mktemp -d /tmp/lab5-prepare-$SLURM_JOB_ID-XXXXXX)}"
 export HF_HUB_CACHE="$LAB5_CACHE/hub"
 export HF_DATASETS_CACHE="$LAB5_CACHE/datasets"
 [[ "$(df -Pk "$LAB5_CACHE" | awk 'NR==2 {print $4}')" -ge 1468006400 ]]
