@@ -65,6 +65,7 @@ class SlurmExecutor:
         resources: Resources,
         submission: Path,
         output_directory: Path,
+        job_name: str | None = None,
     ) -> list[str]:
         if re.fullmatch(r"[a-zA-Z][a-zA-Z0-9_-]*", task_id) is None:
             raise ValueError("Invalid task ID for Slurm")
@@ -77,6 +78,8 @@ class SlurmExecutor:
         if resources.timeout_seconds > 48 * 3600:
             raise ValueError("Nano4 H200 jobs cannot exceed 48 hours")
 
+        if job_name is not None and re.fullmatch(r"[A-Za-z0-9_-]+", job_name) is None:
+            raise ValueError("Invalid Slurm job name")
         script = submission / "src" / "labs" / f"{task_id}.sbatch"
         if not script.is_file():
             raise FileNotFoundError(f"Expected src/labs/{task_id}.sbatch")
@@ -90,7 +93,7 @@ class SlurmExecutor:
             f"--cpus-per-task={resources.cpus}",
             f"--mem={resources.memory_gb}G",
             f"--time={math.ceil(resources.timeout_seconds / 60)}",
-            f"--job-name=judge-{task_id}",
+            f"--job-name={job_name or f'judge-{task_id}'}",
             f"--chdir={submission.resolve()}",
             f"--output={(output_directory / 'slurm.log').resolve()}",
             f"--error={(output_directory / 'slurm.log').resolve()}",
@@ -104,6 +107,9 @@ class SlurmExecutor:
         resources: Resources,
         submission: Path,
         output_directory: Path,
+        job_name: str | None = None,
+        hf_home: Path | None = None,
+        uv_cache: Path | None = None,
     ) -> str:
         output_directory.mkdir(parents=True, exist_ok=True)
         command = self.build_submit_command(
@@ -111,6 +117,7 @@ class SlurmExecutor:
             resources=resources,
             submission=submission,
             output_directory=output_directory,
+            job_name=job_name,
         )
         environment = os.environ.copy()
         for variable in SECRET_ENVIRONMENT_VARIABLES:
@@ -121,9 +128,12 @@ class SlurmExecutor:
                 "JUDGE_SUBMISSION_DIR": str(submission.resolve()),
                 "JUDGE_OUTPUT_DIR": str(output_directory.resolve()),
                 "JUDGE_TRUSTED_ROOT": str(self.trusted_root),
-                "HF_HOME": str(Path(os.environ.get("JUDGE_HF_HOME", "/work/hf-cache"))),
+                "HF_HOME": str(
+                    hf_home or Path(os.environ.get("JUDGE_HF_HOME", "/work/hf-cache"))
+                ),
                 "UV_CACHE_DIR": str(
-                    Path(os.environ.get("JUDGE_UV_CACHE_DIR", "/work/uv-cache"))
+                    uv_cache
+                    or Path(os.environ.get("JUDGE_UV_CACHE_DIR", "/work/uv-cache"))
                 ),
             }
         )

@@ -60,13 +60,13 @@ class SlurmExecutorTests(unittest.TestCase):
         with self.assertRaises(FileNotFoundError):
             self.command(Resources(gpus=1))
 
-    def test_submits_without_agent_secrets_and_parses_job_id(self) -> None:
+    def test_submits_without_credentials_and_parses_job_id(self) -> None:
         process = Mock(stdout="123456;cluster\n")
         with (
             patch("judge.slurm_executor.subprocess.run", return_value=process) as run,
             patch.dict(
                 "os.environ",
-                {"JUDGE_AGENT_TOKEN": "secret", "WANDB_API_KEY": "secret"},
+                {"TS_AUTHKEY": "secret", "WANDB_API_KEY": "secret"},
             ),
         ):
             job_id = self.executor.submit(
@@ -77,7 +77,7 @@ class SlurmExecutorTests(unittest.TestCase):
             )
         self.assertEqual(job_id, "123456")
         environment = run.call_args.kwargs["env"]
-        self.assertNotIn("JUDGE_AGENT_TOKEN", environment)
+        self.assertNotIn("TS_AUTHKEY", environment)
         self.assertNotIn("WANDB_API_KEY", environment)
         self.assertEqual(environment["JUDGE_TASK_ID"], "lab2")
 

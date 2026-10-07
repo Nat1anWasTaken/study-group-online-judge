@@ -1,5 +1,7 @@
 # syntax=docker/dockerfile:1.7
 
+FROM tailscale/tailscale:latest AS tailscale
+
 FROM python:3.14-slim AS base
 
 COPY --from=ghcr.io/astral-sh/uv:0.12.17 /uv /uvx /usr/local/bin/
@@ -24,12 +26,11 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 
 FROM base AS judge
 
-ARG JUDGE_REVISION=unknown
-
 COPY --from=docker:29.4.0-cli /usr/local/bin/docker /usr/local/bin/docker
+COPY --from=tailscale /usr/local/bin/tailscale /usr/local/bin/tailscale
 
 RUN apt-get update \
-    && DEBIAN_FRONTEND=noninteractive apt-get install --yes --no-install-recommends git \
+    && DEBIAN_FRONTEND=noninteractive apt-get install --yes --no-install-recommends git openssh-client ca-certificates \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --gid 10001 judge \
     && useradd --uid 10001 --gid 10001 --create-home judge \
@@ -42,7 +43,6 @@ COPY --chown=judge:judge ui/src/lab-names.json /app/lab-names.json
 ENV PATH="/app/.venv/bin:${PATH}" \
     JUDGE_LAB_NAMES_PATH=/app/lab-names.json \
     JUDGE_DATABASE_PATH=/data/judge.db \
-    JUDGE_REVISION=${JUDGE_REVISION} \
     HF_HOME=/home/judge/.cache/huggingface \
     UV_CACHE_DIR=/home/judge/.cache/uv \
     PYTHONUNBUFFERED=1
