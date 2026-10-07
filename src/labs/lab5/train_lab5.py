@@ -15,8 +15,8 @@ import torch
 import torch.distributed as dist
 import torch.nn.functional as F
 import wandb
-from afmuon_lab5 import AFMuon
 from datasets import load_from_disk
+from muon_lab5 import MuonAdamW
 from torch.nn.parallel import DistributedDataParallel
 from torch.utils.data import DataLoader, DistributedSampler
 from transformers import AutoConfig, AutoTokenizer, LlamaForCausalLM, set_seed
@@ -43,9 +43,12 @@ ALL_ATTENTION_FUNCTIONS.register(
     "flash_attention_2", flash_attention_with_matching_dtype
 )
 
-experiment_name = (
-    "afmuon-oracle-rho50-3000-tiedcap3-scale0.5-mlr0.02-vlr0.0003-b262144-s42"
-)
+LEARNING_RATE = float(os.environ.get("LAB5_LR", "0.001"))
+WEIGHT_DECAY = 0.1
+ADAM_BETAS = (0.9, 0.95)
+WARMUP_RATIO = 0.05
+TRAIN_STEPS = 8000
+experiment_name = f"muon-adamw-lr{LEARNING_RATE:g}-wd0.1-cosine-b262144-s42"
 
 
 class TrainingLoss(torch.nn.Module):
@@ -182,20 +185,7 @@ def main():
         gradient_as_bucket_view=True,
         bucket_cap_mb=128,
     )
-    optimizer = AFMuon(
-        raw_model,
-        muon_lr=0.02,
-        vector_lr=0.0003,
-        momentum=0.95,
-        matrix_weight_decay=0.1,
-        ns_steps=5,
-        tied_cap=3.0,
-        tied_scale=0.5,
-        rho_hidden=50.0,
-        rho_output=3000.0,
-        oracle_bisection_steps=32,
-        eps=1e-8,
-    )
+    optimizer = MuonAdamW(raw_model, LEARNING_RATE, WEIGHT_DECAY, ADAM_BETAS)
     sampler = DistributedSampler(
         training_data,
         num_replicas=world_size,
@@ -214,6 +204,7 @@ def main():
     )
     batches = iter(loader)
     max_steps = min(
+        TRAIN_STEPS,
         6000000000 // tokens_per_step,
         len(loader) // 4,
     )
@@ -228,6 +219,10 @@ def main():
     eval_steps = min(2000, max(1, max_steps // 10))
     eval_seconds = 600
     profile_run = os.environ.get("LAB5_PROFILE") == "1"
+    tuning_run = os.environ.get("LAB5_TUNE") == "1"
+    if tuning_run:
+        max_steps = min(max_steps, 1500)
+        eval_steps = 250
     if profile_run:
         max_steps = min(max_steps, 50)
     if rank == 0:
@@ -244,20 +239,22 @@ def main():
             "max_train_tokens": 6000000000,
             "micro_batch_size": 1,
             "gradient_accumulation_steps": 4,
-            "muon_lr": 0.02,
-            "vector_lr": 0.0003,
+            "optimizer_recipe": "muon_hidden_adamw_rest",
+            "learning_rate": LEARNING_RATE,
+            "muon_adjust_lr_fn": "match_rms_adamw",
+            "adamw_betas": ADAM_BETAS,
             "momentum": 0.95,
-            "matrix_weight_decay": 0.1,
+            "weight_decay": WEIGHT_DECAY,
+            "normalization_weight_decay": 0.0,
             "ns_steps": 5,
-            "tied_cap": 3.0,
-            "tied_scale": 0.5,
-            "rho_hidden": 50.0,
-            "rho_output": 3000.0,
-            "oracle_bisection_steps": 32,
-            "eps": 1e-8,
             "max_grad_norm": 1.0,
-            "warmup_tokens": 50000000,
-            "schedule": "warmup_constant",
+            "warmup_ratio": WARMUP_RATIO,
+            "schedule": "warmup_5_cosine_95",
+            "schedule_basis": "optimizer_steps",
+            "schedule_steps": TRAIN_STEPS,
+            "run_steps": max_steps,
+            "tuning_run": tuning_run,
+            "cosine_min_lr_ratio": 0.0,
             "logging_steps": 10,
             "eval_steps": eval_steps,
             "eval_seconds": eval_seconds,
@@ -270,8 +267,7 @@ def main():
             "world_size": world_size,
             "ddp_bucket_cap_mb": 128,
             "wandb_project": "lab5-training-llama",
-            "optimizer_reference": "https://arxiv.org/abs/2610.01395",
-            "optimizer_reference_commit": "2589a530d8a0e99cac2d9f5082a54e31e9146118",
+            "optimizer_reference": "src/labs/lab4/muon_lab4.py",
             "effective_batch_tokens": tokens_per_step,
             "model_config": model_config.to_dict(),
             "data_manifest": manifest,
@@ -376,7 +372,7 @@ def main():
         with (output_dir / "eval-curve.jsonl").open("a") as file:
             file.write(json.dumps(evaluation_metrics) + "\n")
         print(json.dumps(evaluation_metrics), flush=True)
-    if not profile_run:
+    if not profile_run and not tuning_run:
         save_progress()
     last_eval_step = 0
     last_eval_time = time.monotonic()
@@ -410,9 +406,14 @@ def main():
 
         torch.cuda.synchronize(device)
         step_start = time.monotonic()
-        learning_rate_scale = min(1.0, (total_tokens_seen + tokens_per_step) / 50000000)
+        progress = step / TRAIN_STEPS
+        if progress < WARMUP_RATIO:
+            learning_rate_scale = progress / WARMUP_RATIO
+        else:
+            decay_progress = (progress - WARMUP_RATIO) / (1.0 - WARMUP_RATIO)
+            learning_rate_scale = 0.5 * (1.0 + math.cos(math.pi * decay_progress))
         for group in optimizer.param_groups:
-            group["lr"] = group["peak_lr"] * learning_rate_scale
+            group["lr"] = LEARNING_RATE * learning_rate_scale
         optimizer.zero_grad(set_to_none=True)
 
         for micro_step in range(4):
@@ -458,8 +459,7 @@ def main():
                     "train/loss": interval_loss.item() / (world_size * interval_steps),
                     "train/grad_norm": gradient_norm.item(),
                     "train/learning_rate": optimizer.param_groups[0]["lr"],
-                    "train/tied_learning_rate": optimizer.param_groups[1]["lr"],
-                    "train/vector_learning_rate": optimizer.param_groups[2]["lr"],
+                    "train/adamw_learning_rate": optimizer.param_groups[1]["lr"],
                     "train/tokens_per_second": tokens_per_step / step_seconds.item(),
                     "train/total_tokens_seen": total_tokens_seen,
                     "train/step": completed_steps,
@@ -509,7 +509,8 @@ def main():
                 with (output_dir / "eval-curve.jsonl").open("a") as file:
                     file.write(json.dumps(evaluation_metrics) + "\n")
                 print(json.dumps(evaluation_metrics), flush=True)
-            save_progress()
+            if not tuning_run:
+                save_progress()
             last_eval_step = completed_steps
             last_eval_time = time.monotonic()
         if stop.item():
@@ -557,7 +558,8 @@ def main():
                 file.write(json.dumps(evaluation_metrics) + "\n")
             print(json.dumps(evaluation_metrics), flush=True)
 
-        save_progress()
+        if not tuning_run:
+            save_progress()
 
     if rank == 0:
         wandb.finish()

@@ -28,7 +28,7 @@ export UV_PROJECT_ENVIRONMENT="$PWD/work/lab4-fa2-env"
 unset WANDB_SERVICE
 profile_dir="$PWD/work/lab5-profiles/j$SLURM_JOB_ID"
 mkdir -p "$profile_dir/source"
-cp src/labs/lab5/{train_lab5.py,afmuon_lab5.py} "$profile_dir/source/"
+cp src/labs/lab5/{train_lab5.py,muon_lab5.py} "$profile_dir/source/"
 export LAB5_OUTPUT="$profile_dir"
 export LAB5_ALLOCATION_START="$(date +%s)"
 echo "Profiling on $SLURMD_NODENAME"

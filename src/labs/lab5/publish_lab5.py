@@ -50,26 +50,30 @@ datasets:
 - {config['dataset_id']}
 tags:
 - lab5
-- afmuon
+- muon
+- adamw
 - from-scratch
 ---
 
 # {repository.split('/')[-1]}
 
-Llama-3.2-1B architecture trained from random initialization with AF-Muon.
+Llama-3.2-1B architecture trained from random initialization with Muon for hidden
+matrices and AdamW for the tied embedding/output table and normalization parameters.
 
 | Setting | Value |
 | --- | --- |
 | Source run | {run_dir.name} |
 | Context length | {config['sequence_length']} |
 | Tokens per update | {batch_tokens} |
-| Matrix peak learning rate | {config['muon_lr']} |
-| Vector peak learning rate | {config['vector_lr']} |
+| Peak learning rate (Muon and AdamW) | {config['learning_rate']} |
+| Muon learning-rate adjustment | {config['muon_adjust_lr_fn']} |
+| AdamW betas | {config['adamw_betas']} |
 | Momentum | {config['momentum']} |
-| Matrix weight decay | {config['matrix_weight_decay']} |
-| Tied-table cap / scale | {config['tied_cap']} / {config['tied_scale']} |
+| Matrix and embedding weight decay | {config['weight_decay']} |
+| Normalization weight decay | {config['normalization_weight_decay']} |
 | Schedule | {config['schedule']} |
-| Warmup tokens | {config['warmup_tokens']} |
+| Warmup fraction | {config['warmup_ratio']} |
+| Schedule basis | {config['schedule_basis']} |
 | Training tokens processed | {result['total_tokens_seen']} |
 | H200-hours | {result['h200_hours']:.4f} |
 | Heldout perplexity | {result['perplexity']:.4f} |

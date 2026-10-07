@@ -4,6 +4,7 @@
 #SBATCH --partition=dev
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
+#SBATCH --gpus-per-node=H200:1
 #SBATCH --cpus-per-task=2
 #SBATCH --mem=4G
 #SBATCH --time=01:00:00

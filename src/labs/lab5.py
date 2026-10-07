@@ -1,6 +1,60 @@
-"""GPT-2 baseline submission for local Lab 4 smoke tests.
+eval_model_id = "Nat1an/cerulean-lab5-muon-pilot-j511584"
+training_run_url = "https://wandb.ai/cerulean-labs/lab5-training-llama/runs/kyzatb1t"
 
-Replace this with your model's Hugging Face ID for a real submission.
-"""
-
-eval_model_id = ""
+training_config = {
+    "optimizer": {
+        "name": "Muon + AdamW",
+        "learning_rate": 0.001,
+        "parameter_groups": [
+            {
+                "parameters": "hidden matrices",
+                "optimizer": "Muon",
+                "weight_decay": 0.1,
+                "momentum": 0.95,
+                "nesterov": True,
+                "ns_steps": 5,
+                "adjust_lr_fn": "match_rms_adamw",
+            },
+            {
+                "parameters": "tied embedding/output table",
+                "optimizer": "AdamW",
+                "weight_decay": 0.1,
+                "betas": [0.9, 0.95],
+                "eps": 1e-8,
+            },
+            {
+                "parameters": "normalization weights",
+                "optimizer": "AdamW",
+                "weight_decay": 0.0,
+                "betas": [0.9, 0.95],
+                "eps": 1e-8,
+            },
+        ],
+    },
+    "schedule": {
+        "name": "linear warmup then cosine decay",
+        "warmup_steps": 400,
+        "total_steps": 8000,
+        "min_lr": 0.0,
+    },
+    "context_length": 8192,
+    "initialization": "random",
+    "dataset": "allenai/dolma3_mix-150B-1025",
+    "dataset_revision": "afa92bfb22366821c5e6cd427cdd036b34b713ef",
+    "shuffle_seed": 42,
+    "holdout_documents": 50000,
+    "holdout_excluded_from_training": True,
+    "non_padding_tokens_seen": 2062548992,
+    "repeated_tokens_counted": True,
+    "duration_seconds": 6624,
+    "gpu_type": "H200",
+    "gpu_count": 8,
+    "h200_hours": 14.72,
+    "validation_documents": 1024,
+    "micro_batch_size": 1,
+    "gradient_accumulation_steps": 4,
+    "effective_batch_tokens": 262144,
+    "completed_steps": 7868,
+    "max_grad_norm": 1.0,
+    "training_script": "src/labs/lab5/train_lab5.py",
+}
