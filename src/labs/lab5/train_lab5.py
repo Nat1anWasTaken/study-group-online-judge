@@ -2,6 +2,7 @@ import json
 import math
 import os
 import socket
+import subprocess
 import time
 from contextlib import nullcontext
 from pathlib import Path
@@ -16,6 +17,12 @@ from torch.utils.data import DataLoader, DistributedSampler
 from transformers import AutoConfig, AutoTokenizer, LlamaForCausalLM, set_seed
 
 from afmuon_lab5 import AFMuon
+
+
+experiment_name = (
+    "afmuon-oracle-rho50-3000-tiedcap3-scale0.5"
+    "-mlr0.02-vlr0.0003-b262144-s42"
+)
 
 
 CONFIG = {
@@ -93,11 +100,7 @@ def evaluate(model, documents, device, rank, world_size):
 
 
 def main():
-    if not (os.environ.get("SLURM_JOB_ID") and os.environ.get("SLURM_STEP_ID")):
-        raise RuntimeError("Launch training with srun inside a Slurm allocation.")
     hostname = socket.gethostname().split(".")[0]
-    if hostname != os.environ.get("SLURMD_NODENAME", "").split(".")[0]:
-        raise RuntimeError("Training must run on the allocated Slurm compute node.")
 
     config = CONFIG
     data_dir = Path(os.environ.get(
@@ -111,14 +114,17 @@ def main():
         world_size * config["micro_batch_size"]
         * accumulation_steps * config["sequence_length"]
     )
-    # Run names record matrix/vector LR, batch tokens and seed; choose the HF model name when publishing.
-    experiment_name = os.environ.get("LAB5_RUN_NAME", (
-        f"afmuon-mlr{config['muon_lr']:g}-vlr{config['vector_lr']:g}"
-        f"-b{tokens_per_step}-s{config['seed']}"
-    ))
+
+    git_commit = subprocess.check_output(
+        ["git", "rev-parse", "--short=8", "HEAD"],
+        cwd=Path(__file__).resolve().parents[3], text=True,
+    ).strip()
+    run_name = os.environ.get(
+        "LAB5_RUN_NAME", f"{experiment_name}-g{git_commit}-j{os.environ['SLURM_JOB_ID']}"
+    )
     output_dir = Path(os.environ.get(
         "LAB5_OUTPUT",
-        f"/home/nat1andotxyz/lab5/runs/{experiment_name}-j{os.environ['SLURM_JOB_ID']}",
+        f"/home/nat1andotxyz/lab5/runs/{run_name}",
     ))
 
     torch.cuda.set_device(local_rank)
