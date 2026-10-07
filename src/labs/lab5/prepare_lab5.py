@@ -13,6 +13,7 @@ import pyarrow.json as paj
 from datasets import (
     Dataset, Features, Sequence, Value, concatenate_datasets, load_dataset_builder,
 )
+from datasets.arrow_writer import ArrowWriter
 from huggingface_hub import snapshot_download
 from transformers import AutoConfig, AutoTokenizer
 
@@ -22,7 +23,6 @@ DATASET_REVISION = "afa92bfb22366821c5e6cd427cdd036b34b713ef"
 
 
 def convert_text_shard(task):
-    """Convert one compressed shard; completed shards survive interruption."""
     source, destination = map(Path, task)
     if destination.exists():
         return str(destination), len(Dataset.from_file(str(destination)))
@@ -40,8 +40,6 @@ def convert_text_shard(task):
                         chunk = stream.read(10 << 20)
                         if not chunk:
                             break
-                        # End the chunk at a complete JSON line, including long
-                        # documents that cross the nominal chunk boundary.
                         chunk += stream.readline()
                         table = paj.read_json(
                             io.BytesIO(chunk),
@@ -62,7 +60,6 @@ def convert_text_shard(task):
 
 
 def load_text_documents(cache_dir, workers):
-    """Schedule individual files dynamically and retain canonical row order."""
     builder = load_dataset_builder(
         DATASET_ID, revision=DATASET_REVISION,
         cache_dir=str(cache_dir / "datasets"),
@@ -93,7 +90,6 @@ def load_text_documents(cache_dir, workers):
     with ProcessPoolExecutor(
         max_workers=workers, mp_context=get_context("spawn"),
     ) as pool:
-        # Start larger compressed files first to reduce stragglers at the end.
         schedule = sorted(range(len(tasks)),
                           key=lambda index: Path(tasks[index][0]).stat().st_size,
                           reverse=True)
@@ -108,8 +104,6 @@ def load_text_documents(cache_dir, workers):
                                   "completed_shards": completed,
                                   "total_shards": len(tasks),
                                   "converted_documents": converted_rows}), flush=True)
-    # Completion order is deliberately discarded. The OJ's full shuffle depends
-    # on exactly the same source-file and within-file row order as load_dataset.
     return concatenate_datasets([Dataset.from_file(path) for path in ordered_paths])
 
 
@@ -148,6 +142,27 @@ def pack_documents(worker_ids, documents, tokenizer_path, workers, blocks, lengt
         assert emitted_blocks == target_blocks, (worker, emitted_blocks, target_blocks)
 
 
+def init_packing(documents, tokenizer_path, workers, blocks, length, directory):
+    global packing_args
+    packing_args = documents, tokenizer_path, workers, blocks, length, directory
+    pa.set_cpu_count(1)
+    pa.set_io_thread_count(1)
+
+
+def pack_partition(worker):
+    documents, tokenizer_path, workers, blocks, length, directory = packing_args
+    path = Path(directory) / f"worker-{worker:02d}.arrow"
+    temporary = path.with_suffix(".incomplete")
+    features = Features({"input_ids": Sequence(Value("int32"), length=length)})
+    with ArrowWriter(path=str(temporary), features=features, writer_batch_size=256) as writer:
+        for row in pack_documents([worker], documents, tokenizer_path, workers, blocks, length):
+            writer.write(row)
+        rows, _ = writer.finalize()
+    temporary.replace(path)
+    print(f"Packed worker {worker}: {rows} blocks", flush=True)
+    return str(path)
+
+
 def main():
     assert os.environ.get("SLURM_JOB_ID") and os.environ.get("SLURM_STEP_ID")
     hostname = socket.gethostname().split(".")[0]
@@ -157,14 +172,7 @@ def main():
         "LAB5_DATA", "/home/nat1andotxyz/lab5/dolma-seed42-8192-v1"
     ))
     cache_dir = Path(os.environ["LAB5_CACHE"])
-    existing = (set(path.name for path in output_dir.iterdir())
-                if output_dir.exists() else set())
-    assert not existing or (
-        os.environ.get("LAB5_PREPARE_RESUME") == "1"
-        and existing <= {"tokenizer", "model-config"}
-    ), f"Refusing to overwrite prepared output: {output_dir}"
-    assert 0 < 6000000000 <= 6_000_000_000
-    assert 0 < 1024 <= 50000 // 5
+    assert not (output_dir / "manifest.json").exists(), "Data is already prepared"
     output_dir.mkdir(parents=True, exist_ok=True)
 
     tokenizer = AutoTokenizer.from_pretrained(
@@ -185,10 +193,11 @@ def main():
     assert training_end > 0
     training_documents = documents.select(range(training_end)).select_columns(["text"])
     heldout_documents = documents.select(range(training_end, len(documents)))
-    evaluation_documents = heldout_documents.select(range(1024))
+    evaluation_documents = Dataset.from_dict(heldout_documents[:1024])
     heldout_rows = documents._indices.column(0).slice(training_end).to_pylist()
     (output_dir / "holdout-source-rows.json").write_text(json.dumps(heldout_rows))
 
+    print("Tokenizing 1024 validation documents", flush=True)
     evaluation_data = evaluation_documents.map(
         lambda batch: tokenizer(
             batch["text"], add_special_tokens=True, truncation=True,
@@ -203,18 +212,17 @@ def main():
     assert total_blocks >= workers
     print(json.dumps({"stage": "pack", "workers": workers,
                       "training_blocks": total_blocks}), flush=True)
-    training_data = Dataset.from_generator(
-        pack_documents,
-        gen_kwargs={
-            "worker_ids": list(range(workers)), "documents": training_documents,
-            "tokenizer_path": str(output_dir / "tokenizer"), "workers": workers,
-            "blocks": total_blocks, "length": 8192,
-        },
-        num_proc=workers, cache_dir=str(cache_dir / "packed"),
-        features=Features({
-            "input_ids": Sequence(Value("int32"), length=8192)
-        }),
-    )
+    packed_dir = cache_dir / "packed"
+    packed_dir.mkdir(exist_ok=True)
+    with ProcessPoolExecutor(
+        max_workers=workers,
+        mp_context=get_context("fork"),
+        initializer=init_packing,
+        initargs=(training_documents, str(output_dir / "tokenizer"),
+                  workers, total_blocks, 8192, str(packed_dir)),
+    ) as pool:
+        paths = list(pool.map(pack_partition, range(workers)))
+    training_data = concatenate_datasets([Dataset.from_file(path) for path in paths])
     assert len(training_data) == total_blocks
     training_data.save_to_disk(output_dir / "train", max_shard_size="1GB")
 

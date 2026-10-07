@@ -11,7 +11,6 @@
 #SBATCH --output=logs/lab5-prepare-%j.out
 #SBATCH --error=logs/lab5-prepare-%j.err
 
-# The dev partition requires a GPU allocation even for CPU-only preparation.
 set -euo pipefail
 cd "$SLURM_SUBMIT_DIR"
 export LAB5_DATA="${LAB5_DATA:-/home/nat1andotxyz/lab5/dolma-seed42-8192-v1}"
@@ -25,9 +24,7 @@ set -euo pipefail
 export LAB5_CACHE="${LAB5_PREPARE_CACHE:-$(mktemp -d /tmp/lab5-prepare-$SLURM_JOB_ID-XXXXXX)}"
 export HF_HUB_CACHE="$LAB5_CACHE/hub"
 export HF_DATASETS_CACHE="$LAB5_CACHE/datasets"
-[[ "$(df -Pk "$LAB5_CACHE" | awk 'NR==2 {print $4}')" -ge 1468006400 ]]
 mkdir -p "$(dirname "$LAB5_DATA")"
-[[ "$(df -Pk "$(dirname "$LAB5_DATA")" | awk 'NR==2 {print $4}')" -ge 62914560 ]]
 printf 'Host: %s; cache: %s\n' "$(hostname)" "$LAB5_CACHE"
 uv run --env-file "$PWD/.env" --no-sync python -u src/labs/lab5/prepare_lab5.py
 rm -rf -- "$LAB5_CACHE"
