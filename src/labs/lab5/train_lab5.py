@@ -26,14 +26,22 @@ from transformers.integrations.flash_attention import (
 from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS
 
 
-def flash_attention_with_matching_dtype(module, query, key, value, attention_mask, **kwargs):
+def flash_attention_with_matching_dtype(
+    module, query, key, value, attention_mask, **kwargs
+):
     return hf_flash_attention_forward(
-        module, query.to(value.dtype), key.to(value.dtype), value,
-        attention_mask, **kwargs,
+        module,
+        query.to(value.dtype),
+        key.to(value.dtype),
+        value,
+        attention_mask,
+        **kwargs,
     )
 
 
-ALL_ATTENTION_FUNCTIONS.register("flash_attention_2", flash_attention_with_matching_dtype)
+ALL_ATTENTION_FUNCTIONS.register(
+    "flash_attention_2", flash_attention_with_matching_dtype
+)
 
 experiment_name = (
     "afmuon-oracle-rho50-3000-tiedcap3-scale0.5-mlr0.02-vlr0.0003-b262144-s42"
@@ -47,13 +55,22 @@ class TrainingLoss(torch.nn.Module):
 
     def forward(self, input_ids):
         batch_size, sequence_length = input_ids.shape
-        cu_seq_lens = torch.arange(
-            batch_size + 1, device=input_ids.device, dtype=torch.int32,
-        ) * sequence_length
+        cu_seq_lens = (
+            torch.arange(
+                batch_size + 1,
+                device=input_ids.device,
+                dtype=torch.int32,
+            )
+            * sequence_length
+        )
         return self.model(
-            input_ids=input_ids, labels=input_ids, use_cache=False,
-            cu_seq_lens_q=cu_seq_lens, cu_seq_lens_k=cu_seq_lens,
-            max_length_q=sequence_length, max_length_k=sequence_length,
+            input_ids=input_ids,
+            labels=input_ids,
+            use_cache=False,
+            cu_seq_lens_q=cu_seq_lens,
+            cu_seq_lens_k=cu_seq_lens,
+            max_length_q=sequence_length,
+            max_length_k=sequence_length,
         ).loss
 
 
@@ -77,13 +94,16 @@ def evaluate(model, documents, device, rank, world_size):
             continue
 
         with torch.autocast("cuda", dtype=torch.bfloat16):
-            hidden_states = model.model(input_ids=input_ids, use_cache=False).last_hidden_state[0, :-1]
+            hidden_states = model.model(
+                input_ids=input_ids, use_cache=False
+            ).last_hidden_state[0, :-1]
         labels = input_ids[0, 1:]
 
         for start in range(0, len(labels), 256):
             with torch.autocast("cuda", dtype=torch.bfloat16):
                 negative_log_likelihood = evaluation_loss(
-                    hidden_states[start : start + 256], model.lm_head.weight,
+                    hidden_states[start : start + 256],
+                    model.lm_head.weight,
                     labels[start : start + 256],
                 )
             totals[0] += negative_log_likelihood.double()
@@ -92,8 +112,11 @@ def evaluate(model, documents, device, rank, world_size):
     dist.all_reduce(totals)
     mean_loss = (totals[0] / totals[1]).item()
     model.train()
-    return {"eval/loss": mean_loss, "eval/perplexity": math.exp(mean_loss),
-            "eval/seconds": time.monotonic() - started}
+    return {
+        "eval/loss": mean_loss,
+        "eval/perplexity": math.exp(mean_loss),
+        "eval/seconds": time.monotonic() - started,
+    }
 
 
 def main():
@@ -109,14 +132,17 @@ def main():
     local_rank = int(os.environ["LOCAL_RANK"])
     tokens_per_step = world_size * 1 * 4 * 8192
 
-    git_commit = os.environ.get("LAB5_GIT_COMMIT") or subprocess.check_output(
-        ["git", "rev-parse", "--short=8", "HEAD"],
-        cwd=Path.cwd(),
-        text=True,
-    ).strip()
+    git_commit = (
+        os.environ.get("LAB5_GIT_COMMIT")
+        or subprocess.check_output(
+            ["git", "rev-parse", "--short=8", "HEAD"],
+            cwd=Path.cwd(),
+            text=True,
+        ).strip()
+    )
     run_name = os.environ.get(
         "LAB5_RUN_NAME",
-        f"{experiment_name}-g{git_commit}-j{os.environ['SLURM_JOB_ID']}",
+        f"{os.environ['SLURM_JOB_NAME']}/{experiment_name}-g{git_commit}-j{os.environ['SLURM_JOB_ID']}",
     )
     output_dir = Path(
         os.environ.get(
@@ -146,12 +172,15 @@ def main():
     model_config._attn_implementation = "flash_attention_2"
 
     raw_model = LlamaForCausalLM(model_config).to(device=device, dtype=torch.float32)
-    compiled_loss = torch.compile(TrainingLoss(raw_model), fullgraph=True, dynamic=False)
+    compiled_loss = torch.compile(
+        TrainingLoss(raw_model), fullgraph=True, dynamic=False
+    )
     model = DistributedDataParallel(
         compiled_loss,
         device_ids=[local_rank],
         broadcast_buffers=False,
         gradient_as_bucket_view=True,
+        bucket_cap_mb=128,
     )
     optimizer = AFMuon(
         raw_model,
@@ -164,7 +193,6 @@ def main():
         tied_scale=0.5,
         rho_hidden=50.0,
         rho_output=3000.0,
-        oracle_chunk_rows=2048,
         oracle_bisection_steps=32,
         eps=1e-8,
     )
@@ -199,6 +227,9 @@ def main():
     training_deadline = allocation_start + allocation_seconds - 600
     eval_steps = min(2000, max(1, max_steps // 10))
     eval_seconds = 600
+    profile_run = os.environ.get("LAB5_PROFILE") == "1"
+    if profile_run:
+        max_steps = min(max_steps, 50)
     if rank == 0:
         output_dir.mkdir(parents=True, exist_ok=True)
         training_config = {
@@ -222,7 +253,6 @@ def main():
             "tied_scale": 0.5,
             "rho_hidden": 50.0,
             "rho_output": 3000.0,
-            "oracle_chunk_rows": 2048,
             "oracle_bisection_steps": 32,
             "eps": 1e-8,
             "max_grad_norm": 1.0,
@@ -238,6 +268,7 @@ def main():
             "gradient_checkpointing": False,
             "torch_compile": True,
             "world_size": world_size,
+            "ddp_bucket_cap_mb": 128,
             "wandb_project": "lab5-training-llama",
             "optimizer_reference": "https://arxiv.org/abs/2610.01395",
             "optimizer_reference_commit": "2589a530d8a0e99cac2d9f5082a54e31e9146118",
@@ -247,7 +278,7 @@ def main():
         }
         run = wandb.init(
             project="lab5-training-llama",
-            name=output_dir.name,
+            name=run_name,
             config=training_config,
             dir=str(output_dir),
         )
@@ -297,7 +328,7 @@ def main():
                 staging / "optimizer.pt",
             )
             result = {
-                "run_name": output_dir.name,
+                "run_name": run_name,
                 "step": completed_steps,
                 "total_tokens_seen": total_tokens_seen,
                 "wall_hours": (time.time() - allocation_start) / 3600,
@@ -317,17 +348,20 @@ def main():
             pending_link.symlink_to(checkpoint.name)
             os.replace(pending_link, latest)
             wandb.run.summary.update(result)
-            print(json.dumps({"checkpoint": str(checkpoint),
-                              "step": completed_steps}), flush=True)
-            if (previous is not None and previous != checkpoint.resolve()
-                    and previous.parent == checkpoints.resolve()
-                    and previous.name.startswith("step-")):
+            print(
+                json.dumps({"checkpoint": str(checkpoint), "step": completed_steps}),
+                flush=True,
+            )
+            if (
+                previous is not None
+                and previous != checkpoint.resolve()
+                and previous.parent == checkpoints.resolve()
+                and previous.name.startswith("step-")
+            ):
                 shutil.rmtree(previous)
         dist.barrier()
 
-    evaluation_metrics = evaluate(
-        raw_model, evaluation_data, device, rank, world_size
-    )
+    evaluation_metrics = evaluate(raw_model, evaluation_data, device, rank, world_size)
     evaluation_metrics.update(
         {
             "train/total_tokens_seen": 0,
@@ -342,9 +376,31 @@ def main():
         with (output_dir / "eval-curve.jsonl").open("a") as file:
             file.write(json.dumps(evaluation_metrics) + "\n")
         print(json.dumps(evaluation_metrics), flush=True)
-    save_progress()
+    if not profile_run:
+        save_progress()
     last_eval_step = 0
     last_eval_time = time.monotonic()
+
+    profiler = None
+    if profile_run and rank == 0:
+
+        def write_profile(profile):
+            profile.export_chrome_trace(str(output_dir / "profile.json"))
+            table = profile.key_averages().table(
+                sort_by="self_device_time_total", row_limit=35
+            )
+            (output_dir / "profile.txt").write_text(table)
+            print(table, flush=True)
+
+        profiler = torch.profiler.profile(
+            activities=[
+                torch.profiler.ProfilerActivity.CPU,
+                torch.profiler.ProfilerActivity.CUDA,
+            ],
+            schedule=torch.profiler.schedule(wait=20, warmup=2, active=3, repeat=1),
+            on_trace_ready=write_profile,
+        )
+        profiler.start()
 
     for step in range(1, max_steps + 1):
         stop = torch.tensor(int(time.time() >= training_deadline), device=device)
@@ -365,15 +421,26 @@ def main():
             )
             sync_gradients = micro_step == 3
             with nullcontext() if sync_gradients else model.no_sync():
-                with torch.autocast("cuda", dtype=torch.bfloat16):
-                    loss = model(input_ids=input_ids)
-                (loss / 4).backward()
+                with (
+                    torch.profiler.record_function("forward")
+                    if profiler
+                    else nullcontext()
+                ):
+                    with torch.autocast("cuda", dtype=torch.bfloat16):
+                        loss = model(input_ids=input_ids)
+                with (
+                    torch.profiler.record_function("backward")
+                    if profiler
+                    else nullcontext()
+                ):
+                    (loss / 4).backward()
             interval_loss += loss.detach().double() / 4
 
         gradient_norm = torch.nn.utils.clip_grad_norm_(
             model.parameters(), 1.0, error_if_nonfinite=True
         )
-        optimizer.step()
+        with torch.profiler.record_function("optimizer") if profiler else nullcontext():
+            optimizer.step()
         torch.cuda.synchronize(device)
         step_seconds = torch.tensor(time.monotonic() - step_start, device=device)
         dist.all_reduce(step_seconds, op=dist.ReduceOp.MAX)
@@ -399,7 +466,8 @@ def main():
                     "train/step_seconds": step_seconds.item(),
                     "train/wall_hours": (time.time() - allocation_start) / 3600,
                     "train/training_hours": training_seconds / 3600,
-                    "train/peak_allocated_gb": torch.cuda.max_memory_allocated(device) / 1e9,
+                    "train/peak_allocated_gb": torch.cuda.max_memory_allocated(device)
+                    / 1e9,
                     "train/h200_hours": (time.time() - allocation_start)
                     * world_size
                     / 3600,
@@ -417,6 +485,8 @@ def main():
             or step == max_steps
             or stop.item()
         )
+        if profile_run:
+            evaluation_due = False
         evaluate_now = torch.tensor(int(evaluation_due), device=device)
         dist.broadcast(evaluate_now, src=0)
         if evaluate_now.item():
@@ -444,6 +514,16 @@ def main():
             last_eval_time = time.monotonic()
         if stop.item():
             break
+        if profiler:
+            profiler.step()
+
+    if profiler:
+        profiler.stop()
+    if profile_run:
+        if rank == 0:
+            wandb.finish()
+        dist.destroy_process_group()
+        return
 
     if interval_steps:
         dist.all_reduce(interval_loss)

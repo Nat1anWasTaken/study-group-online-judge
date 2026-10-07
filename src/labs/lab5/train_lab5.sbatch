@@ -14,7 +14,8 @@
 set -euo pipefail
 cd "$SLURM_SUBMIT_DIR"
 export LAB5_ALLOCATION_START="$(date +%s)"
-export LAB5_ALLOCATION_SECONDS="${LAB5_ALLOCATION_SECONDS:-7200}"
+export LAB5_ALLOCATION_SECONDS=7200
+export LAB5_PROFILE=0
 export LAB5_GIT_COMMIT="$(git rev-parse --short=8 HEAD)"
 module purge
 module load cuda/13.0

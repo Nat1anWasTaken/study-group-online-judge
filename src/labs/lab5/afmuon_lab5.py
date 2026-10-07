@@ -1,6 +1,91 @@
 import math
 
 import torch
+import triton
+import triton.language as tl
+
+
+@triton.jit
+def _embedding_update_kernel(
+    parameter,
+    gradient,
+    momentum,
+    learning_rate,
+    momentum_decay,
+    WIDTH: tl.constexpr,
+    CAP: tl.constexpr,
+    BISECTION_STEPS: tl.constexpr,
+    BLOCK: tl.constexpr,
+):
+    row = tl.program_id(0)
+    columns = tl.arange(0, BLOCK)
+    mask = columns < WIDTH
+    offsets = row * WIDTH + columns
+    learning_rate = learning_rate.to(tl.float32)
+    momentum_decay = momentum_decay.to(tl.float32)
+    updated_momentum = tl.load(
+        momentum + offsets, mask, other=0
+    ) * momentum_decay + tl.load(gradient + offsets, mask, other=0)
+    tl.store(momentum + offsets, updated_momentum, mask)
+    signs = tl.where(
+        updated_momentum > 0, 1.0, tl.where(updated_momentum < 0, -1.0, 0.0)
+    )
+    magnitudes = tl.abs(updated_momentum)
+    normalized = magnitudes / tl.maximum(
+        tl.max(magnitudes, 0), tl.full((), 1e-38, tl.float32)
+    )
+    support = tl.sum((normalized != 0).to(tl.int32), 0)
+    direction = signs * CAP
+    if support * (CAP * CAP) > WIDTH:
+        lower = 0.0
+        upper = tl.sqrt(tl.full((), WIDTH, tl.float32)) / tl.sqrt(
+            tl.sum(normalized * normalized, 0)
+        )
+        capped = tl.minimum(normalized * upper, CAP)
+        squared_norm = tl.sum(capped * capped, 0)
+        expansions = 0
+        while (squared_norm < WIDTH) & (expansions < 128):
+            lower = upper
+            upper = 2.0 * upper
+            capped = tl.minimum(normalized * upper, CAP)
+            squared_norm = tl.sum(capped * capped, 0)
+            expansions += 1
+        for _ in range(BISECTION_STEPS):
+            middle = (lower + upper) / 2.0
+            capped = tl.minimum(normalized * middle, CAP)
+            below_target = tl.sum(capped * capped, 0) < WIDTH
+            lower = tl.where(below_target, middle, lower)
+            upper = tl.where(below_target, upper, middle)
+        direction = signs * tl.minimum(normalized * lower, CAP)
+    weights = tl.load(parameter + offsets, mask, other=0)
+    tl.store(parameter + offsets, weights - learning_rate * direction, mask)
+
+
+@torch.no_grad()
+def embedding_update_(
+    parameter, gradient, momentum, learning_rate, momentum_decay, cap, bisection_steps
+):
+    assert parameter.is_cuda and parameter.dtype == torch.float32
+    assert parameter.ndim == 2 and parameter.is_contiguous()
+    assert gradient.shape == momentum.shape == parameter.shape
+    assert gradient.is_contiguous() and momentum.is_contiguous()
+    assert gradient.dtype == momentum.dtype == parameter.dtype
+    assert gradient.device == momentum.device == parameter.device
+    width = parameter.shape[1]
+    with torch.cuda.device(parameter.device):
+        _embedding_update_kernel[(parameter.shape[0],)](
+            parameter,
+            gradient,
+            momentum,
+            learning_rate,
+            momentum_decay,
+            WIDTH=width,
+            CAP=cap,
+            BISECTION_STEPS=bisection_steps,
+            BLOCK=triton.next_power_of_2(width),
+            num_warps=4,
+            enable_fp_fusion=False,
+        )
 
 
 def polar_direction(gradient, momentum, momentum_decay, iterations):
@@ -22,57 +107,25 @@ def polar_direction(gradient, momentum, momentum_decay, iterations):
     return direction * math.sqrt(max(1.0, rows / columns))
 
 
-def bisect_cap_direction(active_magnitudes, lower, upper, cap, width, bisection_steps):
-    for _ in range(bisection_steps):
-        middle = (lower + upper) / 2
-        squared_norm = (active_magnitudes * middle).clamp_max(cap).square().sum(dim=1, keepdim=True)
-        below_target = squared_norm < width
-        lower = torch.where(below_target, middle, lower)
-        upper = torch.where(below_target, upper, middle)
-    return (active_magnitudes * lower).clamp_max(cap)
-
-
 compiled_polar_direction = torch.compile(polar_direction, fullgraph=True, dynamic=False)
-compiled_bisect_cap_direction = torch.compile(bisect_cap_direction, fullgraph=True, dynamic=True)
-
-
-def finite_cap_direction(momentum, cap, bisection_steps, *, compile_bisection=True):
-    width = momentum.shape[1]
-    magnitudes = momentum.abs()
-    normalized = magnitudes / magnitudes.amax(dim=1, keepdim=True).clamp_min(1e-38)
-    support_size = normalized.count_nonzero(dim=1)
-    active_rows = support_size * cap ** 2 > width
-    direction = momentum.sign() * cap
-    if not active_rows.any().item():
-        return direction
-
-    active_magnitudes = normalized[active_rows]
-    lower = torch.zeros_like(active_magnitudes[:, :1])
-    upper = math.sqrt(width) / active_magnitudes.square().sum(dim=1, keepdim=True).sqrt()
-
-    for _ in range(128):
-        squared_norm = (active_magnitudes * upper).clamp_max(cap).square().sum(dim=1, keepdim=True)
-        expand = squared_norm < width
-        if not expand.any().item():
-            break
-        lower = torch.where(expand, upper, lower)
-        upper = torch.where(expand, 2 * upper, upper)
-
-    squared_norm = (active_magnitudes * upper).clamp_max(cap).square().sum(dim=1)
-    assert torch.isfinite(upper).all().item() and (squared_norm >= width).all().item()
-
-    solve = compiled_bisect_cap_direction if compile_bisection else bisect_cap_direction
-    direction[active_rows] = momentum[active_rows].sign() * solve(
-        active_magnitudes, lower, upper, cap, width, bisection_steps
-    )
-    return direction
 
 
 class AFMuon(torch.optim.Optimizer):
     def __init__(
-        self, model, *, muon_lr, vector_lr, momentum, matrix_weight_decay,
-        ns_steps, tied_cap, tied_scale, rho_hidden, rho_output,
-        oracle_chunk_rows, oracle_bisection_steps, eps,
+        self,
+        model,
+        *,
+        muon_lr,
+        vector_lr,
+        momentum,
+        matrix_weight_decay,
+        ns_steps,
+        tied_cap,
+        tied_scale,
+        rho_hidden,
+        rho_output,
+        oracle_bisection_steps,
+        eps,
     ):
         tied_embedding = model.get_input_embeddings().weight
         assert model.get_output_embeddings().weight is tied_embedding
@@ -89,16 +142,18 @@ class AFMuon(torch.optim.Optimizer):
         tied_learning_rate = (
             muon_lr * rho_output / rho_hidden * tied_scale / tied_embedding.shape[1]
         )
-        super().__init__([
-            {"params": matrices, "role": "matrix", "lr": muon_lr},
-            {"params": [tied_embedding], "role": "tied", "lr": tied_learning_rate},
-            {"params": vectors, "role": "vector", "lr": vector_lr},
-        ], {})
+        super().__init__(
+            [
+                {"params": matrices, "role": "matrix", "lr": muon_lr},
+                {"params": [tied_embedding], "role": "tied", "lr": tied_learning_rate},
+                {"params": vectors, "role": "vector", "lr": vector_lr},
+            ],
+            {},
+        )
         self.momentum = momentum
         self.matrix_weight_decay = matrix_weight_decay
         self.ns_steps = ns_steps
         self.tied_cap = tied_cap
-        self.oracle_chunk_rows = oracle_chunk_rows
         self.oracle_bisection_steps = oracle_bisection_steps
         self.eps = eps
         for group in self.param_groups:
@@ -126,16 +181,18 @@ class AFMuon(torch.optim.Optimizer):
                     parameter.add_(direction, alpha=-group["lr"])
                     continue
 
-                momentum.mul_(self.momentum).add_(parameter.grad)
                 if group["role"] == "vector":
+                    momentum.mul_(self.momentum).add_(parameter.grad)
                     rms = momentum.square().mean().sqrt().clamp_min(self.eps)
                     parameter.add_(momentum / rms, alpha=-group["lr"])
                 else:
-                    for start in range(0, len(parameter), self.oracle_chunk_rows):
-                        stop = start + self.oracle_chunk_rows
-                        direction = finite_cap_direction(
-                            momentum[start:stop], self.tied_cap,
-                            self.oracle_bisection_steps,
-                        )
-                        parameter[start:stop].add_(direction, alpha=-group["lr"])
+                    embedding_update_(
+                        parameter,
+                        parameter.grad,
+                        momentum,
+                        group["lr"],
+                        self.momentum,
+                        self.tied_cap,
+                        self.oracle_bisection_steps,
+                    )
         return loss
