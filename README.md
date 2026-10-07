@@ -159,7 +159,7 @@ FA2 inside a CUDA 13 Slurm allocation before the timed training run:
 
 ```console
 mkdir -p logs
-sbatch --account=ACD115198 --constraint=H200 --exclude=25a-hgpn001,25a-hgpn003 src/labs/setup_lab4.sbatch
+sbatch --account=ACD115198 --constraint=H200 --exclude=25a-hgpn001,25a-hgpn003 src/labs/lab4/setup_lab4.sbatch
 ```
 
 Setup creates an isolated `work/lab4-fa2-env` environment that reads the

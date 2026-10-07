@@ -17,4 +17,4 @@ export OMP_NUM_THREADS=1
 export MKL_NUM_THREADS=1
 srun --ntasks=1 --cpus-per-task=2 \
     uv run --env-file "$PWD/.env" --no-sync \
-    python -u src/labs/publish_lab5.py "$@"
+    python -u src/labs/lab5/publish_lab5.py "$@"

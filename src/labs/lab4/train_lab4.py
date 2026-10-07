@@ -48,7 +48,7 @@ HF_REPO_ID = os.environ.get("LAB4_HF_REPO_ID", "")
 
 
 def code_revision(directory=None):
-    directory = directory or Path(__file__).resolve().parents[2]
+    directory = directory or Path(__file__).resolve().parents[3]
 
     def git(*args):
         return subprocess.check_output(

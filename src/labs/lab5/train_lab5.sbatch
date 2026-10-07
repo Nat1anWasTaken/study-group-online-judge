@@ -16,7 +16,6 @@ cd "$SLURM_SUBMIT_DIR"
 export LAB5_ALLOCATION_START="$(date +%s)"
 module purge
 module load cuda/13.0
-export LAB5_CONFIG="${LAB5_CONFIG:-$PWD/src/labs/lab5_config.json}"
 export LAB5_DATA="${LAB5_DATA:-/home/nat1andotxyz/lab5/dolma-seed42-8192-v1}"
 export UV_PROJECT_ENVIRONMENT="$PWD/work/lab4-fa2-env"
 export WANDB_PROJECT=lab5-training-llama
@@ -29,4 +28,4 @@ unset WANDB_SERVICE
 srun --ntasks=1 --cpus-per-task=24 \
     uv run --env-file "$PWD/.env" --no-sync \
     python -u -m torch.distributed.run --standalone --nnodes=1 --nproc-per-node=8 \
-    src/labs/train_lab5.py
+    src/labs/lab5/train_lab5.py

@@ -6,6 +6,8 @@ from pathlib import Path
 from datasets import Dataset, Features, Sequence, Value, load_dataset
 from transformers import AutoConfig, AutoTokenizer
 
+from train_lab5 import CONFIG
+
 
 def pack_documents(worker_ids, documents, tokenizer_path, workers, blocks, length):
     tokenizer = AutoTokenizer.from_pretrained(tokenizer_path, local_files_only=True)
@@ -47,10 +49,7 @@ def main():
     hostname = socket.gethostname().split(".")[0]
     assert hostname == os.environ["SLURMD_NODENAME"].split(".")[0]
 
-    config_path = Path(os.environ.get(
-        "LAB5_CONFIG", Path(__file__).with_name("lab5_config.json")
-    ))
-    config = json.loads(config_path.read_text())
+    config = CONFIG
     output_dir = Path(os.environ.get(
         "LAB5_DATA", "/home/nat1andotxyz/lab5/dolma-seed42-8192-v1"
     ))

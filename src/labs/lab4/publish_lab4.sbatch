@@ -17,4 +17,4 @@ LAB4_SOURCE_DIR="$PWD"
 export WANDB_DIR="$LAB4_SOURCE_DIR"
 export OMP_NUM_THREADS=4
 export HF_HUB_DISABLE_XET=1
-uv run --project /work/nat1andotxyz/study-group-online-judge --env-file /work/nat1andotxyz/study-group-online-judge/.env --no-sync python -u "$LAB4_SOURCE_DIR/src/labs/publish_lab4.py" "$1"
+uv run --project /work/nat1andotxyz/study-group-online-judge --env-file /work/nat1andotxyz/study-group-online-judge/.env --no-sync python -u "$LAB4_SOURCE_DIR/src/labs/lab4/publish_lab4.py" "$1"

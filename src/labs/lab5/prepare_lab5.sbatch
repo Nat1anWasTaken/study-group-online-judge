@@ -12,7 +12,6 @@
 
 set -euo pipefail
 cd "$SLURM_SUBMIT_DIR"
-export LAB5_CONFIG="${LAB5_CONFIG:-$PWD/src/labs/lab5_config.json}"
 export LAB5_DATA="${LAB5_DATA:-/home/nat1andotxyz/lab5/dolma-seed42-8192-v1}"
 export UV_PROJECT_ENVIRONMENT="$PWD/work/lab4-fa2-env"
 export TOKENIZERS_PARALLELISM=false
@@ -27,6 +26,6 @@ export HF_DATASETS_CACHE="$LAB5_CACHE/datasets"
 mkdir -p "$(dirname "$LAB5_DATA")"
 [[ "$(df -Pk "$(dirname "$LAB5_DATA")" | awk 'NR==2 {print $4}')" -ge 62914560 ]]
 printf 'Host: %s; cache: %s\n' "$(hostname)" "$LAB5_CACHE"
-uv run --env-file "$PWD/.env" --no-sync python -u src/labs/prepare_lab5.py
+uv run --env-file "$PWD/.env" --no-sync python -u src/labs/lab5/prepare_lab5.py
 rm -rf -- "$LAB5_CACHE"
 EOF_COMPUTE

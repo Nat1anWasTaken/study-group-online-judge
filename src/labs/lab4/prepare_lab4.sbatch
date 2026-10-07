@@ -16,4 +16,4 @@ export TOKENIZERS_PARALLELISM=false
 export OMP_NUM_THREADS=1
 export MKL_NUM_THREADS=1
 
-uv run --no-sync python -u src/labs/prepare_lab4.py
+uv run --no-sync python -u src/labs/lab4/prepare_lab4.py

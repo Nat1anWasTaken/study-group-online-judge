@@ -32,4 +32,4 @@ uv run --project "$LAB4_SOURCE_DIR" --env-file /work/nat1andotxyz/study-group-on
     --mixed_precision bf16 \
     --num_machines 1 \
     --dynamo_backend no \
-    "$LAB4_SOURCE_DIR/src/labs/train_lab4.py"
+    "$LAB4_SOURCE_DIR/src/labs/lab4/train_lab4.py"
