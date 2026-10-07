@@ -1,12 +1,16 @@
 import json
 import math
 import os
+import random
+import shutil
 import socket
 import subprocess
+import tempfile
 import time
 from contextlib import nullcontext
 from pathlib import Path
 
+import numpy as np
 import torch
 import torch._dynamo.config
 import torch.distributed as dist
@@ -287,6 +291,70 @@ def main():
     interval_steps = 0
     training_seconds = 0.0
     interval_loss = torch.zeros((), dtype=torch.float64, device=device)
+
+    def save_progress():
+        """Publish a complete checkpoint before any rank continues training."""
+        rng_state = {
+            "python": random.getstate(),
+            "numpy": np.random.get_state(),
+            "torch": torch.get_rng_state(),
+            "cuda": torch.cuda.get_rng_state(device),
+        }
+        rank_rng_states = [None] * world_size if rank == 0 else None
+        dist.gather_object(rng_state, rank_rng_states, dst=0)
+        if rank == 0:
+            checkpoints = output_dir / "checkpoints"
+            checkpoints.mkdir(exist_ok=True)
+            latest = checkpoints / "latest"
+            previous = latest.resolve() if latest.is_symlink() else None
+            staging = Path(tempfile.mkdtemp(prefix=".saving-", dir=checkpoints))
+            raw_model.save_pretrained(staging / "model", max_shard_size="2GB")
+            tokenizer.save_pretrained(staging / "model")
+            torch.save(
+                {
+                    "optimizer": optimizer.state_dict(),
+                    "step": completed_steps,
+                    "total_tokens_seen": total_tokens_seen,
+                    "training_seconds": training_seconds,
+                    "world_size": world_size,
+                    "sampler_seed": sampler.seed,
+                    "sampler_epoch": sampler.epoch,
+                    "batches_consumed_per_rank": completed_steps * 4,
+                    "rng_states": rank_rng_states,
+                },
+                staging / "optimizer.pt",
+            )
+            result = {
+                "run_name": output_dir.name,
+                "step": completed_steps,
+                "total_tokens_seen": total_tokens_seen,
+                "wall_hours": (time.time() - allocation_start) / 3600,
+                "training_hours": training_seconds / 3600,
+                "h200_hours": (time.time() - allocation_start) * world_size / 3600,
+                "perplexity": evaluation_metrics["eval/perplexity"],
+                "wandb_url": run.url,
+            }
+            (staging / "result.json").write_text(json.dumps(result, indent=2))
+            checkpoint = checkpoints / f"step-{completed_steps:08d}"
+            staging.rename(checkpoint)
+            # All exported paths follow one pointer, replaced only after every
+            # checkpoint file has been written successfully.
+            for name in ("model", "optimizer.pt", "result.json"):
+                exported = output_dir / name
+                if not exported.is_symlink():
+                    exported.symlink_to(Path("checkpoints/latest") / name)
+            pending_link = checkpoints / ".latest-next"
+            pending_link.symlink_to(checkpoint.name)
+            os.replace(pending_link, latest)
+            wandb.run.summary.update(result)
+            print(json.dumps({"checkpoint": str(checkpoint),
+                              "step": completed_steps}), flush=True)
+            if (previous is not None and previous != checkpoint.resolve()
+                    and previous.parent == checkpoints.resolve()
+                    and previous.name.startswith("step-")):
+                shutil.rmtree(previous)
+        dist.barrier()
+
     evaluation_metrics = evaluate(
         raw_model, evaluation_data, device, rank, world_size
     )
@@ -304,6 +372,7 @@ def main():
         with (output_dir / "eval-curve.jsonl").open("a") as file:
             file.write(json.dumps(evaluation_metrics) + "\n")
         print(json.dumps(evaluation_metrics), flush=True)
+    save_progress()
     last_eval_step = 0
     last_eval_time = time.monotonic()
 
@@ -400,6 +469,7 @@ def main():
                 with (output_dir / "eval-curve.jsonl").open("a") as file:
                     file.write(json.dumps(evaluation_metrics) + "\n")
                 print(json.dumps(evaluation_metrics), flush=True)
+            save_progress()
             last_eval_step = completed_steps
             last_eval_time = time.monotonic()
         if stop.item():
@@ -437,29 +507,9 @@ def main():
                 file.write(json.dumps(evaluation_metrics) + "\n")
             print(json.dumps(evaluation_metrics), flush=True)
 
+        save_progress()
+
     if rank == 0:
-        raw_model.save_pretrained(output_dir / "model", max_shard_size="2GB")
-        tokenizer.save_pretrained(output_dir / "model")
-        torch.save(
-            {
-                "optimizer": optimizer.state_dict(),
-                "step": completed_steps,
-                "total_tokens_seen": total_tokens_seen,
-            },
-            output_dir / "optimizer.pt",
-        )
-        result = {
-            "run_name": output_dir.name,
-            "step": completed_steps,
-            "total_tokens_seen": total_tokens_seen,
-            "wall_hours": (time.time() - allocation_start) / 3600,
-            "training_hours": training_seconds / 3600,
-            "h200_hours": (time.time() - allocation_start) * world_size / 3600,
-            "perplexity": evaluation_metrics["eval/perplexity"],
-            "wandb_url": run.url,
-        }
-        (output_dir / "result.json").write_text(json.dumps(result, indent=2))
-        wandb.run.summary.update(result)
         wandb.finish()
     dist.barrier()
     dist.destroy_process_group()
