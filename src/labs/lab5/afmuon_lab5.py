@@ -22,7 +22,21 @@ def polar_direction(gradient, momentum, momentum_decay, iterations):
     return direction * math.sqrt(max(1.0, rows / columns))
 
 
-def finite_cap_direction(momentum, cap, bisection_steps):
+def bisect_cap_direction(active_magnitudes, lower, upper, cap, width, bisection_steps):
+    for _ in range(bisection_steps):
+        middle = (lower + upper) / 2
+        squared_norm = (active_magnitudes * middle).clamp_max(cap).square().sum(dim=1, keepdim=True)
+        below_target = squared_norm < width
+        lower = torch.where(below_target, middle, lower)
+        upper = torch.where(below_target, upper, middle)
+    return (active_magnitudes * lower).clamp_max(cap)
+
+
+compiled_polar_direction = torch.compile(polar_direction, fullgraph=True, dynamic=False)
+compiled_bisect_cap_direction = torch.compile(bisect_cap_direction, fullgraph=True, dynamic=True)
+
+
+def finite_cap_direction(momentum, cap, bisection_steps, *, compile_bisection=True):
     width = momentum.shape[1]
     magnitudes = momentum.abs()
     normalized = magnitudes / magnitudes.amax(dim=1, keepdim=True).clamp_min(1e-38)
@@ -47,15 +61,9 @@ def finite_cap_direction(momentum, cap, bisection_steps):
     squared_norm = (active_magnitudes * upper).clamp_max(cap).square().sum(dim=1)
     assert torch.isfinite(upper).all().item() and (squared_norm >= width).all().item()
 
-    for _ in range(bisection_steps):
-        middle = (lower + upper) / 2
-        squared_norm = (active_magnitudes * middle).clamp_max(cap).square().sum(dim=1, keepdim=True)
-        below_target = squared_norm < width
-        lower = torch.where(below_target, middle, lower)
-        upper = torch.where(below_target, upper, middle)
-
-    direction[active_rows] = (
-        momentum[active_rows].sign() * (active_magnitudes * lower).clamp_max(cap)
+    solve = compiled_bisect_cap_direction if compile_bisection else bisect_cap_direction
+    direction[active_rows] = momentum[active_rows].sign() * solve(
+        active_magnitudes, lower, upper, cap, width, bisection_steps
     )
     return direction
 
@@ -111,7 +119,7 @@ class AFMuon(torch.optim.Optimizer):
                 momentum = state["momentum"]
 
                 if group["role"] == "matrix":
-                    direction = polar_direction(
+                    direction = compiled_polar_direction(
                         parameter.grad, momentum, self.momentum, self.ns_steps
                     )
                     parameter.mul_(1 - group["lr"] * self.matrix_weight_decay)

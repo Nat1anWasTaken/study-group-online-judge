@@ -8,6 +8,7 @@ from contextlib import nullcontext
 from pathlib import Path
 
 import torch
+import torch._dynamo.config
 import torch.distributed as dist
 import torch.nn.functional as F
 import wandb
@@ -16,14 +17,36 @@ from datasets import load_from_disk
 from torch.nn.parallel import DistributedDataParallel
 from torch.utils.data import DataLoader, DistributedSampler
 from transformers import AutoConfig, AutoTokenizer, LlamaForCausalLM, set_seed
+from transformers.modeling_flash_attention_utils import logger as flash_attention_logger
+
+# This warning has no tensor effects; keep FA2's dtype conversion in the graph.
+torch._dynamo.config.ignore_logging_functions.add(flash_attention_logger.warning_once)
 
 experiment_name = (
     "afmuon-oracle-rho50-3000-tiedcap3-scale0.5-mlr0.02-vlr0.0003-b262144-s42"
 )
 
 
+class TrainingLoss(torch.nn.Module):
+    """Keep the large vocabulary logits inside the compiled loss graph."""
+
+    def __init__(self, model):
+        super().__init__()
+        self.model = model
+
+    def forward(self, input_ids):
+        return self.model(input_ids=input_ids, labels=input_ids, use_cache=False).loss
+
+
+@torch.compile(fullgraph=True, dynamic=True)
+def evaluation_loss(hidden_states, weight, labels):
+    logits = F.linear(hidden_states, weight)
+    return F.cross_entropy(logits.float(), labels, reduction="sum")
+
+
 @torch.inference_mode()
 def evaluate(model, documents, device, rank, world_size):
+    started = time.monotonic()
     model.eval()
     totals = torch.zeros(2, dtype=torch.float64, device=device)
 
@@ -35,26 +58,29 @@ def evaluate(model, documents, device, rank, world_size):
             continue
 
         with torch.autocast("cuda", dtype=torch.bfloat16):
-            logits = model(input_ids=input_ids, use_cache=False).logits[0, :-1]
+            hidden_states = model.model(input_ids=input_ids, use_cache=False).last_hidden_state[0, :-1]
         labels = input_ids[0, 1:]
 
         for start in range(0, len(labels), 256):
-            negative_log_likelihood = F.cross_entropy(
-                logits[start : start + 256].float(),
-                labels[start : start + 256],
-                reduction="sum",
-            )
+            with torch.autocast("cuda", dtype=torch.bfloat16):
+                negative_log_likelihood = evaluation_loss(
+                    hidden_states[start : start + 256], model.lm_head.weight,
+                    labels[start : start + 256],
+                )
             totals[0] += negative_log_likelihood.double()
         totals[1] += len(labels)
 
     dist.all_reduce(totals)
     mean_loss = (totals[0] / totals[1]).item()
     model.train()
-    return {"eval/loss": mean_loss, "eval/perplexity": math.exp(mean_loss)}
+    return {"eval/loss": mean_loss, "eval/perplexity": math.exp(mean_loss),
+            "eval/seconds": time.monotonic() - started}
 
 
 def main():
     hostname = socket.gethostname().split(".")[0]
+    assert os.environ.get("SLURM_JOB_ID") and os.environ.get("SLURM_STEP_ID")
+    assert hostname == os.environ["SLURMD_NODENAME"].split(".")[0]
 
     data_dir = Path(
         os.environ.get("LAB5_DATA", "/home/nat1andotxyz/lab5/dolma-seed42-8192-v1")
@@ -64,9 +90,9 @@ def main():
     local_rank = int(os.environ["LOCAL_RANK"])
     tokens_per_step = world_size * 1 * 4 * 8192
 
-    git_commit = subprocess.check_output(
+    git_commit = os.environ.get("LAB5_GIT_COMMIT") or subprocess.check_output(
         ["git", "rev-parse", "--short=8", "HEAD"],
-        cwd=Path(__file__).resolve().parents[3],
+        cwd=Path.cwd(),
         text=True,
     ).strip()
     run_name = os.environ.get(
@@ -100,15 +126,16 @@ def main():
     model_config.pad_token_id = tokenizer.pad_token_id
     model_config._attn_implementation = "flash_attention_2"
 
-    model = LlamaForCausalLM(model_config).to(device=device, dtype=torch.float32)
+    raw_model = LlamaForCausalLM(model_config).to(device=device, dtype=torch.float32)
+    compiled_loss = torch.compile(TrainingLoss(raw_model), fullgraph=True, dynamic=False)
     model = DistributedDataParallel(
-        model,
+        compiled_loss,
         device_ids=[local_rank],
         broadcast_buffers=False,
         gradient_as_bucket_view=True,
     )
     optimizer = AFMuon(
-        model.module,
+        raw_model,
         muon_lr=0.02,
         vector_lr=0.0003,
         momentum=0.95,
@@ -136,6 +163,7 @@ def main():
         num_workers=2,
         pin_memory=True,
         drop_last=True,
+        persistent_workers=True,
     )
     batches = iter(loader)
     max_steps = min(
@@ -148,7 +176,10 @@ def main():
         )
 
     allocation_start = float(os.environ["LAB5_ALLOCATION_START"])
-    training_deadline = allocation_start + 7200 - 600
+    allocation_seconds = int(os.environ.get("LAB5_ALLOCATION_SECONDS", "7200"))
+    training_deadline = allocation_start + allocation_seconds - 600
+    eval_steps = min(2000, max(1, max_steps // 10))
+    eval_seconds = 600
     if rank == 0:
         output_dir.mkdir(parents=True, exist_ok=True)
         run = wandb.init(
@@ -182,13 +213,15 @@ def main():
                 "warmup_tokens": 50000000,
                 "schedule": "warmup_constant",
                 "logging_steps": 10,
-                "eval_steps": 200,
-                "eval_seconds": 600,
-                "allocation_seconds": 7200,
+                "eval_steps": eval_steps,
+                "eval_seconds": eval_seconds,
+                "allocation_seconds": allocation_seconds,
                 "finalize_reserve_seconds": 600,
                 "max_h200_hours": 64,
                 "attention_implementation": "flash_attention_2",
                 "gradient_checkpointing": False,
+                "torch_compile": True,
+                "world_size": world_size,
                 "wandb_project": "lab5-training-llama",
                 "optimizer_reference": "https://arxiv.org/abs/2610.01395",
                 "optimizer_reference_commit": "2589a530d8a0e99cac2d9f5082a54e31e9146118",
@@ -231,13 +264,15 @@ def main():
                     "warmup_tokens": 50000000,
                     "schedule": "warmup_constant",
                     "logging_steps": 10,
-                    "eval_steps": 200,
-                    "eval_seconds": 600,
-                    "allocation_seconds": 7200,
+                    "eval_steps": eval_steps,
+                    "eval_seconds": eval_seconds,
+                    "allocation_seconds": allocation_seconds,
                     "finalize_reserve_seconds": 600,
                     "max_h200_hours": 64,
                     "attention_implementation": "flash_attention_2",
                     "gradient_checkpointing": False,
+                    "torch_compile": True,
+                    "world_size": world_size,
                     "wandb_project": "lab5-training-llama",
                     "optimizer_reference": "https://arxiv.org/abs/2610.01395",
                     "optimizer_reference_commit": "2589a530d8a0e99cac2d9f5082a54e31e9146118",
@@ -250,15 +285,18 @@ def main():
     completed_steps = 0
     total_tokens_seen = 0
     interval_steps = 0
+    training_seconds = 0.0
     interval_loss = torch.zeros((), dtype=torch.float64, device=device)
     evaluation_metrics = evaluate(
-        model.module, evaluation_data, device, rank, world_size
+        raw_model, evaluation_data, device, rank, world_size
     )
     evaluation_metrics.update(
         {
             "train/total_tokens_seen": 0,
             "eval/step": 0,
             "eval/h200_hours": (time.time() - allocation_start) * world_size / 3600,
+            "eval/wall_hours": (time.time() - allocation_start) / 3600,
+            "eval/training_hours": 0.0,
         }
     )
     if rank == 0:
@@ -289,9 +327,7 @@ def main():
             sync_gradients = micro_step == 3
             with nullcontext() if sync_gradients else model.no_sync():
                 with torch.autocast("cuda", dtype=torch.bfloat16):
-                    loss = model(
-                        input_ids=input_ids, labels=input_ids, use_cache=False
-                    ).loss
+                    loss = model(input_ids=input_ids)
                 (loss / 4).backward()
             interval_loss += loss.detach().double() / 4
 
@@ -302,6 +338,7 @@ def main():
         torch.cuda.synchronize(device)
         step_seconds = torch.tensor(time.monotonic() - step_start, device=device)
         dist.all_reduce(step_seconds, op=dist.ReduceOp.MAX)
+        training_seconds += step_seconds.item()
         completed_steps = step
         total_tokens_seen += tokens_per_step
         interval_steps += 1
@@ -320,18 +357,24 @@ def main():
                     "train/tokens_per_second": tokens_per_step / step_seconds.item(),
                     "train/total_tokens_seen": total_tokens_seen,
                     "train/step": completed_steps,
+                    "train/step_seconds": step_seconds.item(),
+                    "train/wall_hours": (time.time() - allocation_start) / 3600,
+                    "train/training_hours": training_seconds / 3600,
+                    "train/peak_allocated_gb": torch.cuda.max_memory_allocated(device) / 1e9,
                     "train/h200_hours": (time.time() - allocation_start)
                     * world_size
                     / 3600,
                 }
                 wandb.log(training_metrics)
+                with (output_dir / "train-curve.jsonl").open("a") as file:
+                    file.write(json.dumps(training_metrics) + "\n")
                 print(json.dumps(training_metrics), flush=True)
             interval_loss.zero_()
             interval_steps = 0
 
         evaluation_due = (
-            step - last_eval_step >= 200
-            or time.monotonic() - last_eval_time >= 600
+            step - last_eval_step >= eval_steps
+            or time.monotonic() - last_eval_time >= eval_seconds
             or step == max_steps
             or stop.item()
         )
@@ -339,12 +382,14 @@ def main():
         dist.broadcast(evaluate_now, src=0)
         if evaluate_now.item():
             evaluation_metrics = evaluate(
-                model.module, evaluation_data, device, rank, world_size
+                raw_model, evaluation_data, device, rank, world_size
             )
             evaluation_metrics.update(
                 {
                     "train/total_tokens_seen": total_tokens_seen,
                     "eval/step": completed_steps,
+                    "eval/wall_hours": (time.time() - allocation_start) / 3600,
+                    "eval/training_hours": training_seconds / 3600,
                     "eval/h200_hours": (time.time() - allocation_start)
                     * world_size
                     / 3600,
@@ -375,12 +420,14 @@ def main():
 
     if last_eval_step != completed_steps:
         evaluation_metrics = evaluate(
-            model.module, evaluation_data, device, rank, world_size
+            raw_model, evaluation_data, device, rank, world_size
         )
         evaluation_metrics.update(
             {
                 "train/total_tokens_seen": total_tokens_seen,
                 "eval/step": completed_steps,
+                "eval/wall_hours": (time.time() - allocation_start) / 3600,
+                "eval/training_hours": training_seconds / 3600,
                 "eval/h200_hours": (time.time() - allocation_start) * world_size / 3600,
             }
         )
@@ -391,7 +438,7 @@ def main():
             print(json.dumps(evaluation_metrics), flush=True)
 
     if rank == 0:
-        model.module.save_pretrained(output_dir / "model", max_shard_size="2GB")
+        raw_model.save_pretrained(output_dir / "model", max_shard_size="2GB")
         tokenizer.save_pretrained(output_dir / "model")
         torch.save(
             {
@@ -405,6 +452,8 @@ def main():
             "run_name": output_dir.name,
             "step": completed_steps,
             "total_tokens_seen": total_tokens_seen,
+            "wall_hours": (time.time() - allocation_start) / 3600,
+            "training_hours": training_seconds / 3600,
             "h200_hours": (time.time() - allocation_start) * world_size / 3600,
             "perplexity": evaluation_metrics["eval/perplexity"],
             "wandb_url": run.url,

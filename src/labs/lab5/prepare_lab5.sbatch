@@ -4,7 +4,8 @@
 #SBATCH --partition=dev
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=24
+#SBATCH --gpus-per-node=H200:1
+#SBATCH --cpus-per-task=12
 #SBATCH --mem=128G
 #SBATCH --time=04:00:00
 #SBATCH --output=logs/lab5-prepare-%j.out
@@ -17,7 +18,7 @@ export UV_PROJECT_ENVIRONMENT="$PWD/work/lab4-fa2-env"
 export TOKENIZERS_PARALLELISM=false
 export OMP_NUM_THREADS=1
 export MKL_NUM_THREADS=1
-srun --ntasks=1 --cpus-per-task=24 bash -s <<'EOF_COMPUTE'
+srun --ntasks=1 --cpus-per-task="$SLURM_CPUS_PER_TASK" bash -s <<'EOF_COMPUTE'
 set -euo pipefail
 export LAB5_CACHE="$(mktemp -d /tmp/lab5-prepare-$SLURM_JOB_ID-XXXXXX)"
 export HF_HUB_CACHE="$LAB5_CACHE/hub"
