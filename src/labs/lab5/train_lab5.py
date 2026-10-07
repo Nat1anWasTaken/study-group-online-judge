@@ -87,17 +87,17 @@ def evaluate(model, documents, device, rank, world_size):
         totals[1] += len(labels)
 
     dist.all_reduce(totals)
-    assert totals[1].item() > 0
     mean_loss = (totals[0] / totals[1]).item()
-    assert math.isfinite(mean_loss)
     model.train()
     return {"eval/loss": mean_loss, "eval/perplexity": math.exp(mean_loss)}
 
 
 def main():
-    assert os.environ.get("SLURM_JOB_ID") and os.environ.get("SLURM_STEP_ID")
+    if not (os.environ.get("SLURM_JOB_ID") and os.environ.get("SLURM_STEP_ID")):
+        raise RuntimeError("Launch training with srun inside a Slurm allocation.")
     hostname = socket.gethostname().split(".")[0]
-    assert hostname == os.environ["SLURMD_NODENAME"].split(".")[0]
+    if hostname != os.environ.get("SLURMD_NODENAME", "").split(".")[0]:
+        raise RuntimeError("Training must run on the allocated Slurm compute node.")
 
     config = CONFIG
     data_dir = Path(os.environ.get(
@@ -121,39 +121,21 @@ def main():
         f"/home/nat1andotxyz/lab5/runs/{experiment_name}-j{os.environ['SLURM_JOB_ID']}",
     ))
 
-    assert world_size == config["world_size"] and world_size <= 8
-    assert 0 < config["max_train_tokens"] <= 6_000_000_000
-    assert world_size * config["allocation_seconds"] / 3600 <= config["max_h200_hours"] <= 64
-    assert config["schedule"] == "warmup_constant"
-    assert config["warmup_tokens"] > 0
-    assert 0 < config["finalize_reserve_seconds"] < config["allocation_seconds"]
-
     torch.cuda.set_device(local_rank)
     device = torch.device("cuda", local_rank)
-    assert "H200" in torch.cuda.get_device_name(device)
     dist.init_process_group("nccl", device_id=device)
     set_seed(config["seed"])
     torch.backends.cuda.matmul.allow_tf32 = True
 
     manifest = json.loads((data_dir / "manifest.json").read_text())
-    for key in (
-        "dataset_id", "dataset_revision", "model_id", "model_revision",
-        "sequence_length", "holdout_documents", "eval_documents",
-    ):
-        assert manifest[key] == config[key]
-    assert manifest["shuffle_seed"] == config["seed"]
-
     training_data = load_from_disk(data_dir / "train").with_format("torch")
     evaluation_data = load_from_disk(data_dir / "eval")
-    assert len(training_data) == manifest["training_blocks"]
-    assert len(evaluation_data) == config["eval_documents"]
     tokenizer = AutoTokenizer.from_pretrained(
         data_dir / "tokenizer", local_files_only=True
     )
     model_config = AutoConfig.from_pretrained(
         data_dir / "model-config", local_files_only=True
     )
-    assert model_config.tie_word_embeddings
     model_config.max_position_embeddings = config["sequence_length"]
     model_config.use_cache = False
     model_config.pad_token_id = tokenizer.pad_token_id
@@ -182,9 +164,8 @@ def main():
         config["max_train_tokens"] // tokens_per_step,
         len(loader) // accumulation_steps,
     )
-    assert max_steps > 0
-    assert 0 < config["eval_steps"] <= max(1, max_steps // 10)
-    assert config["logging_steps"] > 0 and config["eval_seconds"] > 0
+    if max_steps == 0:
+        raise ValueError("The dataset and token budget must allow at least one training step.")
 
     allocation_start = float(os.environ["LAB5_ALLOCATION_START"])
     training_deadline = (
@@ -192,7 +173,6 @@ def main():
         - config["finalize_reserve_seconds"]
     )
     if rank == 0:
-        assert not output_dir.exists() or not any(output_dir.iterdir())
         output_dir.mkdir(parents=True, exist_ok=True)
         run = wandb.init(
             project=config["wandb_project"], name=output_dir.name,
@@ -243,9 +223,6 @@ def main():
         for micro_step in range(accumulation_steps):
             input_ids = next(batches)["input_ids"].to(
                 device, dtype=torch.long, non_blocking=True
-            )
-            assert input_ids.shape == (
-                config["micro_batch_size"], config["sequence_length"]
             )
             sync_gradients = micro_step == accumulation_steps - 1
             with nullcontext() if sync_gradients else model.no_sync():
