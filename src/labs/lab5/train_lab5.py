@@ -52,7 +52,7 @@ TRAIN_STEPS = int(os.environ.get("LAB5_STEPS", "3000"))
 SAVE_STEPS = {int(step) for step in os.environ.get("LAB5_SAVE_STEPS", "1200").split(",") if step}
 RESUME = os.environ.get("LAB5_RESUME")
 DECAY_START = TRAIN_STEPS * (1 - DECAY_FRACTION)
-experiment_name = f"muon-adamw-lr{LEARNING_RATE:g}-wd0.1-wsd-b262144-s42"
+experiment_name = f"muon-adamw-lr{LEARNING_RATE:g}-wd0.1-zloss1e-4-wsd-b262144-s42"
 
 
 def learning_rate_scale(step):
@@ -74,7 +74,7 @@ class TrainingLoss(torch.nn.Module):
             torch.arange(batch_size + 1, device=input_ids.device, dtype=torch.int32)
             * sequence_length
         )
-        return self.model(
+        output = self.model(
             input_ids=input_ids,
             labels=input_ids,
             use_cache=False,
@@ -82,7 +82,8 @@ class TrainingLoss(torch.nn.Module):
             cu_seq_lens_k=cu_seq_lens,
             max_length_q=sequence_length,
             max_length_k=sequence_length,
-        ).loss
+        )
+        return output.loss + 1e-4 * output.logits.float().logsumexp(-1).square().mean(), output.loss
 
 
 @torch.compile(fullgraph=True, dynamic=True)
@@ -306,8 +307,8 @@ def main():
             input_ids = next(batches)["input_ids"].to(device, dtype=torch.long, non_blocking=True)
             with nullcontext() if micro_step == ACCUMULATION - 1 else model.no_sync():
                 with torch.autocast("cuda", dtype=torch.bfloat16):
-                    loss = model(input_ids=input_ids)
-                (loss / ACCUMULATION).backward()
+                    total_loss, loss = model(input_ids=input_ids)
+                (total_loss / ACCUMULATION).backward()
             interval_loss += loss.detach().double() / ACCUMULATION
         gradient_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0, error_if_nonfinite=True)
         optimizer.step()
