@@ -2,7 +2,6 @@ import json
 import math
 import os
 import random
-import shutil
 import socket
 import subprocess
 import tempfile
@@ -47,8 +46,9 @@ LEARNING_RATE = float(os.environ.get("LAB5_LR", "0.001"))
 WEIGHT_DECAY = 0.1
 ADAM_BETAS = (0.9, 0.95)
 WARMUP_RATIO = 0.05
-TRAIN_STEPS = 8000
-experiment_name = f"muon-adamw-lr{LEARNING_RATE:g}-wd0.1-cosine-b262144-s42"
+TRAIN_STEPS = int(os.environ.get("LAB5_STEPS", "8000"))
+SAVE_STEPS = {int(step) for step in os.environ.get("LAB5_SAVE_STEPS", "").split(",") if step}
+experiment_name = f"muon-adamw-lr{LEARNING_RATE:g}-wd0.1-cosine-b262144-s42-n{TRAIN_STEPS}"
 
 
 class TrainingLoss(torch.nn.Module):
@@ -215,7 +215,7 @@ def main():
 
     allocation_start = float(os.environ["LAB5_ALLOCATION_START"])
     allocation_seconds = int(os.environ.get("LAB5_ALLOCATION_SECONDS", "7200"))
-    training_deadline = allocation_start + allocation_seconds - 600
+    training_deadline = allocation_start + allocation_seconds - 300
     eval_steps = min(2000, max(1, max_steps // 10))
     eval_seconds = 600
     profile_run = os.environ.get("LAB5_PROFILE") == "1"
@@ -259,7 +259,8 @@ def main():
             "eval_steps": eval_steps,
             "eval_seconds": eval_seconds,
             "allocation_seconds": allocation_seconds,
-            "finalize_reserve_seconds": 600,
+            "finalize_reserve_seconds": 300,
+            "save_steps": sorted(SAVE_STEPS),
             "max_h200_hours": 64,
             "attention_implementation": "flash_attention_2",
             "gradient_checkpointing": False,
@@ -305,7 +306,6 @@ def main():
             checkpoints = output_dir / "checkpoints"
             checkpoints.mkdir(exist_ok=True)
             latest = checkpoints / "latest"
-            previous = latest.resolve() if latest.is_symlink() else None
             staging = Path(tempfile.mkdtemp(prefix=".saving-", dir=checkpoints))
             raw_model.save_pretrained(staging / "model", max_shard_size="2GB")
             tokenizer.save_pretrained(staging / "model")
@@ -348,13 +348,6 @@ def main():
                 json.dumps({"checkpoint": str(checkpoint), "step": completed_steps}),
                 flush=True,
             )
-            if (
-                previous is not None
-                and previous != checkpoint.resolve()
-                and previous.parent == checkpoints.resolve()
-                and previous.name.startswith("step-")
-            ):
-                shutil.rmtree(previous)
         dist.barrier()
 
     evaluation_metrics = evaluate(raw_model, evaluation_data, device, rank, world_size)
@@ -372,8 +365,6 @@ def main():
         with (output_dir / "eval-curve.jsonl").open("a") as file:
             file.write(json.dumps(evaluation_metrics) + "\n")
         print(json.dumps(evaluation_metrics), flush=True)
-    if not profile_run and not tuning_run:
-        save_progress()
     last_eval_step = 0
     last_eval_time = time.monotonic()
 
@@ -509,7 +500,7 @@ def main():
                 with (output_dir / "eval-curve.jsonl").open("a") as file:
                     file.write(json.dumps(evaluation_metrics) + "\n")
                 print(json.dumps(evaluation_metrics), flush=True)
-            if not tuning_run:
+            if completed_steps in SAVE_STEPS:
                 save_progress()
             last_eval_step = completed_steps
             last_eval_time = time.monotonic()
