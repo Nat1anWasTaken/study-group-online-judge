@@ -19,7 +19,7 @@ export LAB5_GIT_COMMIT="$(git rev-parse --short=8 HEAD)"
 module purge
 module load cuda/13.0
 REPO=/work/u9216411/acd115198/study-group-online-judge
-export LAB5_DATA="${LAB5_DATA:-/home/nat1andotxyz/lab5/dolma-seed42-8192-v1}"
+export LAB5_DATA="${LAB5_DATA:-/work/u9216411/acd115198/lab5-data/dolma-seed42-8192-trunc8k}"
 export UV_PROJECT_ENVIRONMENT="$REPO/work/lab4-fa2-env"
 export WANDB_PROJECT=lab5-training-llama
 export WANDB_MODE=online

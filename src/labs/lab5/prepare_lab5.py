@@ -123,8 +123,7 @@ def pack_documents(worker_ids, documents, tokenizer_path, workers, blocks, lengt
             )["input_ids"]
 
             for document_tokens in tokenized_documents:
-                pending_tokens.extend(document_tokens)
-                pending_tokens.append(tokenizer.eos_token_id)
+                pending_tokens.extend([*document_tokens, tokenizer.eos_token_id][:length])
                 complete_length = len(pending_tokens) // length * length
 
                 for start in range(0, complete_length, length):
@@ -229,7 +228,7 @@ def main():
     manifest = {
         "dataset_id": DATASET_ID,
         "dataset_revision": DATASET_REVISION,
-        "preparation_format": "text-v1",
+        "preparation_format": "text-v1-truncate-documents-8192",
         "preparation_workers": workers,
         "model_id": "meta-llama/Llama-3.2-1B",
         "model_revision": "4e20de362430cd3b72f300e6b0f18e50e7166e08",
