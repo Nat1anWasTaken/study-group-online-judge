@@ -60,7 +60,7 @@ def learning_rate_scale(step):
         return step / WARMUP_STEPS
     if step <= DECAY_START:
         return 1.0
-    return (TRAIN_STEPS - step) / (TRAIN_STEPS - DECAY_START)
+    return 1 - math.sqrt((step - DECAY_START) / (TRAIN_STEPS - DECAY_START))
 
 
 class TrainingLoss(torch.nn.Module):
@@ -214,7 +214,7 @@ def main():
             "ns_steps": 5,
             "max_grad_norm": 1.0,
             "warmup_ratio": WARMUP_STEPS / TRAIN_STEPS,
-            "schedule": f"warmup_{WARMUP_STEPS}_steps_stable_linear_decay_{DECAY_FRACTION:g}",
+            "schedule": f"warmup_{WARMUP_STEPS}_steps_stable_sqrt_decay_{DECAY_FRACTION:g}",
             "schedule_basis": "optimizer_steps",
             "schedule_steps": TRAIN_STEPS,
             "run_steps": max_steps,
