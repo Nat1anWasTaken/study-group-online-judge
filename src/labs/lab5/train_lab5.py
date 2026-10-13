@@ -38,7 +38,7 @@ ALL_ATTENTION_FUNCTIONS.register(
     "flash_attention_2", flash_attention_with_matching_dtype
 )
 
-LEARNING_RATE = 1e-3
+LEARNING_RATE = 5e-4
 WEIGHT_DECAY = 0.1
 ADAM_BETAS = (0.9, 0.95)
 ACCUMULATION = 4
