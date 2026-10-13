@@ -25,7 +25,7 @@ class MuonAdamW(torch.optim.Optimizer):
         )
         self.adam = torch.optim.AdamW(
             [
-                {"params": [embedding], "weight_decay": weight_decay},
+                {"params": [embedding], "weight_decay": 0.0},
                 {"params": no_decay, "weight_decay": 0.0},
             ],
             lr=lr,
