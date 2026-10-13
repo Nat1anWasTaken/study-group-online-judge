@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-#SBATCH --job-name=lab5-muon-pilot
+#SBATCH --job-name=lab5-train
 #SBATCH --account=ACD115198
 #SBATCH --partition=dev
 #SBATCH --nodes=1
