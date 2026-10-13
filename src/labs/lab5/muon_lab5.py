@@ -33,11 +33,15 @@ class Muon(torch.optim.Optimizer):
                 state = self.state[parameter]
                 if not state:
                     state["momentum_buffer"] = torch.zeros_like(parameter)
+                    state["neuron_second_moment"] = parameter.new_zeros(parameter.shape[0], 1)
                 buffer = state["momentum_buffer"]
                 buffer.lerp_(parameter.grad, 1 - group["momentum"])
                 update = orthogonalize(parameter.grad.lerp(buffer, group["momentum"]))
+                second_moment = state["neuron_second_moment"]
+                second_moment.lerp_(update.square().mean(dim=1, keepdim=True), 0.05)
+                update = update / (second_moment.sqrt() + 1e-8)
                 parameter.mul_(1 - group["lr"] * group["weight_decay"])
-                parameter.add_(update, alpha=-group["lr"] * 0.2 * max(parameter.shape) ** 0.5)
+                parameter.add_(update * (0.2 * update.numel() ** 0.5 / update.norm()), alpha=-group["lr"])
 
 
 class MuonAdamW(torch.optim.Optimizer):
