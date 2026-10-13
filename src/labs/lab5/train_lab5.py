@@ -167,6 +167,8 @@ def main():
         bucket_cap_mb=128,
     )
     optimizer = MuonAdamW(raw_model, LEARNING_RATE, WEIGHT_DECAY, ADAM_BETAS)
+    parameters = [parameter.detach() for parameter in raw_model.parameters()]
+    ema = [parameter.clone() for parameter in parameters]
     start_step = 0
     if RESUME:
         state = torch.load(Path(RESUME) / "optimizer.pt", map_location=device, weights_only=False)
@@ -275,6 +277,18 @@ def main():
             "eval/training_hours": training_seconds / 3600,
             "eval/h200_hours": (time.time() - allocation_start) * world_size / 3600,
         }, "eval-curve.jsonl")
+        live = [parameter.clone() for parameter in parameters]
+        torch._foreach_copy_(parameters, ema)
+        ema_losses, ema_counts = evaluate(raw_model, evaluation_documents, limit, device)
+        torch._foreach_copy_(parameters, live)
+        if rank == 0:
+            with (output_dir / "ema-eval-curve.jsonl").open("a") as file:
+                file.write(json.dumps({
+                    "step": completed_steps,
+                    "perplexity": math.exp((ema_losses[:EVAL_DOCUMENTS].sum() / ema_counts[:EVAL_DOCUMENTS].sum()).item()),
+                    "documents": limit,
+                    "perplexity_all": math.exp((ema_losses.sum() / ema_counts.sum()).item()),
+                }) + "\n")
         return math.exp(mean_loss), losses, counts
 
     def save_checkpoint():
@@ -311,6 +325,7 @@ def main():
             interval_loss += loss.detach().double() / ACCUMULATION
         gradient_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0, error_if_nonfinite=True)
         optimizer.step()
+        torch._foreach_lerp_(ema, parameters, 0.002)
         torch.cuda.synchronize(device)
         step_seconds = torch.tensor(time.monotonic() - step_start, device=device)
         dist.all_reduce(step_seconds, op=dist.ReduceOp.MAX)
