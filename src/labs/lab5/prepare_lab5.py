@@ -24,15 +24,15 @@ DATASET_REVISION = "afa92bfb22366821c5e6cd427cdd036b34b713ef"
 
 
 def download_shard(relative):
-    for attempt in range(6):
+    for attempt in range(12):
         try:
             return Path(hf_hub_download(
                 DATASET_ID, relative, repo_type="dataset", revision=DATASET_REVISION,
             ))
         except Exception:
-            if attempt == 5:
+            if attempt == 11:
                 raise
-            time.sleep(2 ** attempt)
+            time.sleep(min(2 ** attempt, 60))
 
 
 def convert_text_shard(task):
