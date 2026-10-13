@@ -3,6 +3,7 @@ import io
 import json
 import os
 import socket
+import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from multiprocessing import get_context
 from pathlib import Path
@@ -14,7 +15,7 @@ from datasets import (
     Dataset, Features, Sequence, Value, concatenate_datasets, load_dataset_builder,
 )
 from datasets.arrow_writer import ArrowWriter
-from huggingface_hub import snapshot_download
+from huggingface_hub import HfApi, hf_hub_download
 from transformers import AutoConfig, AutoTokenizer
 
 
@@ -22,10 +23,24 @@ DATASET_ID = "allenai/dolma3_mix-150B-1025"
 DATASET_REVISION = "afa92bfb22366821c5e6cd427cdd036b34b713ef"
 
 
+def download_shard(relative):
+    for attempt in range(6):
+        try:
+            return Path(hf_hub_download(
+                DATASET_ID, relative, repo_type="dataset", revision=DATASET_REVISION,
+            ))
+        except Exception:
+            if attempt == 5:
+                raise
+            time.sleep(2 ** attempt)
+
+
 def convert_text_shard(task):
-    source, destination = map(Path, task)
+    relative, destination = task
+    destination = Path(destination)
     if destination.exists():
         return str(destination), len(Dataset.from_file(str(destination)))
+    source = download_shard(relative)
 
     pa.set_cpu_count(1)
     pa.set_io_thread_count(1)
@@ -65,11 +80,12 @@ def load_text_documents(cache_dir, workers):
         cache_dir=str(cache_dir / "datasets"),
     )
     source_files = builder.config.data_files["train"]
-    snapshot = Path(snapshot_download(
-        DATASET_ID, repo_type="dataset", revision=DATASET_REVISION,
-        allow_patterns=["README.md", "data/**/*.jsonl.zst"],
-        max_workers=workers,
-    ))
+    sizes = {
+        file.rfilename: file.size
+        for file in HfApi().dataset_info(
+            DATASET_ID, revision=DATASET_REVISION, files_metadata=True,
+        ).siblings
+    }
     prefix = f"hf://datasets/{DATASET_ID}@{DATASET_REVISION}/"
     converted_dir = cache_dir / "text-v1" / DATASET_REVISION
     converted_dir.mkdir(parents=True, exist_ok=True)
@@ -81,7 +97,7 @@ def load_text_documents(cache_dir, workers):
         destination = converted_dir / (
             hashlib.sha256(relative.encode()).hexdigest() + ".arrow"
         )
-        tasks.append((str(snapshot / relative), str(destination)))
+        tasks.append((relative, str(destination)))
 
     print(json.dumps({"stage": "convert_text", "workers": workers,
                       "source_shards": len(tasks)}), flush=True)
@@ -91,7 +107,7 @@ def load_text_documents(cache_dir, workers):
         max_workers=workers, mp_context=get_context("spawn"),
     ) as pool:
         schedule = sorted(range(len(tasks)),
-                          key=lambda index: Path(tasks[index][0]).stat().st_size,
+                          key=lambda index: sizes[tasks[index][0]],
                           reverse=True)
         pending = {pool.submit(convert_text_shard, tasks[index]): index
                    for index in schedule}
