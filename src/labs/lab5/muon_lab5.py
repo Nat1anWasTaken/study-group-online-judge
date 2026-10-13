@@ -36,7 +36,7 @@ class Muon(torch.optim.Optimizer):
                 buffer = state["momentum_buffer"]
                 buffer.lerp_(parameter.grad, 1 - group["momentum"])
                 update = orthogonalize(parameter.grad.lerp(buffer, group["momentum"]))
-                parameter.mul_(1 - group["lr"] * group["weight_decay"])
+                parameter.mul_(1 - group["lr"] * group["weight_decay"] * (update * parameter > 0))
                 parameter.add_(update, alpha=-group["lr"] * 0.2 * max(parameter.shape) ** 0.5)
 
 
