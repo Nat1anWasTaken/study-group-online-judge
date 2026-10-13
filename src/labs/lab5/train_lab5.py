@@ -11,7 +11,6 @@ import torch.distributed as dist
 import torch.nn.functional as F
 import wandb
 from datasets import load_from_disk
-from muon_lab5 import MuonAdamW
 from torch.nn.parallel import DistributedDataParallel
 from torch.utils.data import DataLoader, DistributedSampler
 from transformers import AutoConfig, AutoTokenizer, LlamaForCausalLM, set_seed
@@ -38,7 +37,7 @@ ALL_ATTENTION_FUNCTIONS.register(
     "flash_attention_2", flash_attention_with_matching_dtype
 )
 
-LEARNING_RATE = 1e-3
+LEARNING_RATE = 6e-4
 WEIGHT_DECAY = 0.1
 ADAM_BETAS = (0.9, 0.95)
 ACCUMULATION = 4
@@ -52,7 +51,7 @@ TRAIN_STEPS = int(os.environ.get("LAB5_STEPS", "3000"))
 SAVE_STEPS = {int(step) for step in os.environ.get("LAB5_SAVE_STEPS", "1200").split(",") if step}
 RESUME = os.environ.get("LAB5_RESUME")
 DECAY_START = TRAIN_STEPS * (1 - DECAY_FRACTION)
-experiment_name = f"muon-adamw-lr{LEARNING_RATE:g}-wd0.1-wsd-b262144-s42"
+experiment_name = f"adamw-lr{LEARNING_RATE:g}-wd0.1-wsd-b262144-s42"
 
 
 def learning_rate_scale(step):
@@ -166,7 +165,15 @@ def main():
         gradient_as_bucket_view=True,
         bucket_cap_mb=128,
     )
-    optimizer = MuonAdamW(raw_model, LEARNING_RATE, WEIGHT_DECAY, ADAM_BETAS)
+    optimizer = torch.optim.AdamW(
+        [
+            {"params": [p for p in raw_model.parameters() if p.ndim == 2], "weight_decay": WEIGHT_DECAY},
+            {"params": [p for p in raw_model.parameters() if p.ndim == 1], "weight_decay": 0.0},
+        ],
+        lr=LEARNING_RATE,
+        betas=ADAM_BETAS,
+        fused=True,
+    )
     start_step = 0
     if RESUME:
         state = torch.load(Path(RESUME) / "optimizer.pt", map_location=device, weights_only=False)
@@ -204,7 +211,7 @@ def main():
             "max_train_tokens": 6000000000,
             "micro_batch_size": 1,
             "gradient_accumulation_steps": ACCUMULATION,
-            "optimizer_recipe": "muon_hidden_adamw_rest",
+            "optimizer_recipe": "adamw",
             "learning_rate": LEARNING_RATE,
             "muon_adjust_lr_fn": "match_rms_adamw",
             "adamw_betas": ADAM_BETAS,
