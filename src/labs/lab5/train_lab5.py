@@ -52,15 +52,13 @@ TRAIN_STEPS = int(os.environ.get("LAB5_STEPS", "3000"))
 SAVE_STEPS = {int(step) for step in os.environ.get("LAB5_SAVE_STEPS", "1200").split(",") if step}
 RESUME = os.environ.get("LAB5_RESUME")
 DECAY_START = TRAIN_STEPS * (1 - DECAY_FRACTION)
-experiment_name = f"muon-adamw-lr{LEARNING_RATE:g}-wd0.1-wsd-b262144-s42"
+experiment_name = f"muon-adamw-lr{LEARNING_RATE:g}-wd0.1-cosine-b262144-s42"
 
 
 def learning_rate_scale(step):
     if step < WARMUP_STEPS:
         return step / WARMUP_STEPS
-    if step <= DECAY_START:
-        return 1.0
-    return (TRAIN_STEPS - step) / (TRAIN_STEPS - DECAY_START)
+    return 0.5 * (1 + math.cos(math.pi * (step - WARMUP_STEPS) / (TRAIN_STEPS - WARMUP_STEPS)))
 
 
 class TrainingLoss(torch.nn.Module):
@@ -214,7 +212,7 @@ def main():
             "ns_steps": 5,
             "max_grad_norm": 1.0,
             "warmup_ratio": WARMUP_STEPS / TRAIN_STEPS,
-            "schedule": f"warmup_{WARMUP_STEPS}_steps_stable_linear_decay_{DECAY_FRACTION:g}",
+            "schedule": f"warmup_{WARMUP_STEPS}_steps_cosine",
             "schedule_basis": "optimizer_steps",
             "schedule_steps": TRAIN_STEPS,
             "run_steps": max_steps,
