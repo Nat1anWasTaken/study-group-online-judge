@@ -52,7 +52,7 @@ TRAIN_STEPS = int(os.environ.get("LAB5_STEPS", "3000"))
 SAVE_STEPS = {int(step) for step in os.environ.get("LAB5_SAVE_STEPS", "1200").split(",") if step}
 RESUME = os.environ.get("LAB5_RESUME")
 DECAY_START = TRAIN_STEPS * (1 - DECAY_FRACTION)
-experiment_name = f"muon-adamw-lr{LEARNING_RATE:g}-wd0.1-wsd-b262144-s42"
+experiment_name = f"muon-adamw-lr{LEARNING_RATE:g}-wd0.1-embedlr0.3x-wsd-b262144-s42"
 
 
 def learning_rate_scale(step):
@@ -301,6 +301,7 @@ def main():
         step_start = time.monotonic()
         for group in optimizer.param_groups:
             group["lr"] = LEARNING_RATE * learning_rate_scale(step)
+        optimizer.param_groups[1]["lr"] *= 0.3
         optimizer.zero_grad(set_to_none=True)
         for micro_step in range(ACCUMULATION):
             input_ids = next(batches)["input_ids"].to(device, dtype=torch.long, non_blocking=True)
