@@ -38,21 +38,21 @@ ALL_ATTENTION_FUNCTIONS.register(
     "flash_attention_2", flash_attention_with_matching_dtype
 )
 
-LEARNING_RATE = 1e-3
+LEARNING_RATE = 7.07e-4
 WEIGHT_DECAY = 0.1
 ADAM_BETAS = (0.9, 0.95)
 ACCUMULATION = 4
-WARMUP_STEPS = 200
+WARMUP_STEPS = 400
 DECAY_FRACTION = 0.2
 SEED = 42
 DATA_SEED = 42
 EVAL_DOCUMENTS = 1024
 FINAL_EVAL_DOCUMENTS = 8192
-TRAIN_STEPS = int(os.environ.get("LAB5_STEPS", "3000"))
-SAVE_STEPS = {int(step) for step in os.environ.get("LAB5_SAVE_STEPS", "1200").split(",") if step}
+TRAIN_STEPS = int(os.environ.get("LAB5_STEPS", "6000"))
+SAVE_STEPS = {int(step) for step in os.environ.get("LAB5_SAVE_STEPS", "2400").split(",") if step}
 RESUME = os.environ.get("LAB5_RESUME")
 DECAY_START = TRAIN_STEPS * (1 - DECAY_FRACTION)
-experiment_name = f"muon-adamw-lr{LEARNING_RATE:g}-wd0.1-wsd-b262144-s42"
+experiment_name = f"muon-adamw-lr{LEARNING_RATE:g}-wd0.1-wsd-b131072-s42"
 
 
 def learning_rate_scale(step):
