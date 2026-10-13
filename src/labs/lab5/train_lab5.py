@@ -45,14 +45,14 @@ ACCUMULATION = 4
 WARMUP_STEPS = 200
 DECAY_FRACTION = 0.2
 SEED = 42
-DATA_SEED = 42
+DATA_SEED = 43
 EVAL_DOCUMENTS = 1024
 FINAL_EVAL_DOCUMENTS = 8192
 TRAIN_STEPS = int(os.environ.get("LAB5_STEPS", "3000"))
 SAVE_STEPS = {int(step) for step in os.environ.get("LAB5_SAVE_STEPS", "1200").split(",") if step}
 RESUME = os.environ.get("LAB5_RESUME")
 DECAY_START = TRAIN_STEPS * (1 - DECAY_FRACTION)
-experiment_name = f"muon-adamw-lr{LEARNING_RATE:g}-wd0.1-wsd-b262144-s42"
+experiment_name = f"muon-adamw-lr{LEARNING_RATE:g}-wd0.1-wsd-b262144-s42-data43"
 
 
 def learning_rate_scale(step):
