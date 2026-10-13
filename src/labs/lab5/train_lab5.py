@@ -52,7 +52,7 @@ TRAIN_STEPS = int(os.environ.get("LAB5_STEPS", "3000"))
 SAVE_STEPS = {int(step) for step in os.environ.get("LAB5_SAVE_STEPS", "1200").split(",") if step}
 RESUME = os.environ.get("LAB5_RESUME")
 DECAY_START = TRAIN_STEPS * (1 - DECAY_FRACTION)
-experiment_name = f"muon-adamw-lr{LEARNING_RATE:g}-wd0.1-wsd-b262144-s42"
+experiment_name = f"muon-adamw-lr{LEARNING_RATE:g}-wd0.1-zeroinit-wsd-b262144-s42"
 
 
 def learning_rate_scale(step):
@@ -159,6 +159,9 @@ def main():
         model_config.pad_token_id = tokenizer.pad_token_id
         model_config._attn_implementation = "flash_attention_2"
         raw_model = LlamaForCausalLM(model_config).to(device=device, dtype=torch.float32)
+        for layer in raw_model.model.layers:
+            torch.nn.init.zeros_(layer.self_attn.o_proj.weight)
+            torch.nn.init.zeros_(layer.mlp.down_proj.weight)
     model = DistributedDataParallel(
         torch.compile(TrainingLoss(raw_model), fullgraph=True, dynamic=False),
         device_ids=[local_rank],
