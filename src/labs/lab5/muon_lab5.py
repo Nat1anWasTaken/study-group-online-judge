@@ -17,7 +17,7 @@ class MuonAdamW(torch.optim.Optimizer):
         self.muon = torch.optim.Muon(
             matrices,
             lr=lr,
-            weight_decay=weight_decay,
+            weight_decay=2 * weight_decay,
             momentum=0.95,
             nesterov=True,
             ns_steps=5,
