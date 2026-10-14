@@ -48,11 +48,12 @@ SEED = 42
 DATA_SEED = 42
 EVAL_DOCUMENTS = 1024
 FINAL_EVAL_DOCUMENTS = 8192
+MAX_DOCUMENTS = 128
 TRAIN_STEPS = int(os.environ.get("LAB5_STEPS", "3000"))
 SAVE_STEPS = {int(step) for step in os.environ.get("LAB5_SAVE_STEPS", "1200").split(",") if step}
 RESUME = os.environ.get("LAB5_RESUME")
 DECAY_START = TRAIN_STEPS * (1 - DECAY_FRACTION)
-experiment_name = f"muon-adamw-lr{LEARNING_RATE:g}-wd0.1-wsd-b262144-s42"
+experiment_name = f"muon-adamw-lr{LEARNING_RATE:g}-wd0.1-docmask-wsd-b262144-s42"
 
 
 def learning_rate_scale(step):
@@ -68,21 +69,27 @@ class TrainingLoss(torch.nn.Module):
         super().__init__()
         self.model = model
 
-    def forward(self, input_ids):
-        batch_size, sequence_length = input_ids.shape
-        cu_seq_lens = (
-            torch.arange(batch_size + 1, device=input_ids.device, dtype=torch.int32)
-            * sequence_length
-        )
+    def forward(self, input_ids, position_ids, cu_seq_lens):
         return self.model(
             input_ids=input_ids,
+            position_ids=position_ids,
             labels=input_ids,
             use_cache=False,
             cu_seq_lens_q=cu_seq_lens,
             cu_seq_lens_k=cu_seq_lens,
-            max_length_q=sequence_length,
-            max_length_k=sequence_length,
+            max_length_q=input_ids.shape[1],
+            max_length_k=input_ids.shape[1],
         ).loss
+
+
+def document_boundaries(input_ids, bos_token_id):
+    tokens = input_ids[0]
+    is_start = tokens == bos_token_id
+    is_start[0] = True
+    starts = torch.nonzero_static(is_start, size=MAX_DOCUMENTS, fill_value=len(tokens)).flatten()
+    cu_seq_lens = torch.cat([starts, starts.new_tensor([len(tokens)])]).int()
+    indices = torch.arange(len(tokens), device=tokens.device)
+    return (indices - torch.cummax(indices * is_start, 0).values)[None], cu_seq_lens
 
 
 @torch.compile(fullgraph=True, dynamic=True)
@@ -306,7 +313,7 @@ def main():
             input_ids = next(batches)["input_ids"].to(device, dtype=torch.long, non_blocking=True)
             with nullcontext() if micro_step == ACCUMULATION - 1 else model.no_sync():
                 with torch.autocast("cuda", dtype=torch.bfloat16):
-                    loss = model(input_ids=input_ids)
+                    loss = model(input_ids, *document_boundaries(input_ids, tokenizer.bos_token_id))
                 (loss / ACCUMULATION).backward()
             interval_loss += loss.detach().double() / ACCUMULATION
         gradient_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0, error_if_nonfinite=True)
