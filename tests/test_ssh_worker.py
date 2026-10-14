@@ -178,6 +178,45 @@ class SSHWorkerTests(unittest.TestCase):
         for secret in ("WANDB_API_KEY", "TS_AUTHKEY", "JUDGE_API_TOKEN"):
             self.assertNotIn(secret, polling.kwargs["input"])
 
+    def test_successful_ssh_forwards_remote_diagnostics_without_logging_payload(self):
+        request = pending_ssh_jobs(self.path)[0]
+        processes = [
+            subprocess.CompletedProcess("ssh", 0, "ready", ""),
+            subprocess.CompletedProcess(
+                "ssh",
+                0,
+                '{"slurm_job_id":"123","slurm_state":"PENDING"}',
+                "setup "
+                + "x" * 9000
+                + "\nslurm.command.response stdout=123|PENDING|0:0\n",
+            ),
+        ]
+        with (
+            patch("judge.ssh.subprocess.run", side_effect=processes),
+            self.assertLogs("judge.execution", level="INFO") as logs,
+        ):
+            snapshot = TailscaleSSH().poll(request)
+        self.assertEqual(snapshot.slurm_job_id, "123")
+        text = "\n".join(logs.output)
+        self.assertIn("ssh.started", text)
+        self.assertIn("ssh.finished", text)
+        self.assertIn("slurm.command.response", text)
+        self.assertIn("123|PENDING|0:0", text)
+        self.assertIn('host="nano4"', text)
+        self.assertIn(request.job_id, text)
+        self.assertNotIn(request.model_dump_json(), text)
+        self.assertNotIn("PYTHONPATH=", text)
+
+    def test_worker_retry_redacts_exception_credentials(self):
+        self.transport.poll.side_effect = ConnectionError("lost hf_hidden123")
+        with self.assertLogs("judge.execution", level="INFO") as logs:
+            poll_jobs(self.path, self.transport)
+        text = "\n".join(logs.output)
+        self.assertIn("worker.poll.retry", text)
+        self.assertIn(self.job.id, text)
+        self.assertNotIn("hf_hidden123", text)
+        self.assertEqual(len(pending_ssh_jobs(self.path)), 1)
+
     def test_preparation_is_per_job_instead_of_cached_for_the_whole_worker(self):
         transport = TailscaleSSH()
         request = pending_ssh_jobs(self.path)[0]

@@ -1,3 +1,4 @@
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -46,6 +47,22 @@ class SlurmExecutorTests(unittest.TestCase):
         self.assertIn("--partition=8gpus", command)
         self.assertIn("--time=241", command)
 
+    def test_excludes_faulty_nodes_in_both_partitions(self) -> None:
+        for seconds in (3600, 14401):
+            command = self.command(Resources(gpus=1, timeout_seconds=seconds))
+            exclusions = [arg for arg in command if arg.startswith("--exclude=")]
+            self.assertEqual(len(exclusions), 1)
+            self.assertEqual(
+                set(exclusions[0].split("=", 1)[1].split(",")),
+                {
+                    "25a-hgpn001",
+                    "25a-hgpn003",
+                    "25a-hgpn027",
+                    "25a-hgpn062",
+                    "25a-hgpn145",
+                },
+            )
+
     def test_rejects_invalid_resources_and_missing_script(self) -> None:
         for resources in (
             Resources(gpus=0),
@@ -88,6 +105,42 @@ class SlurmExecutorTests(unittest.TestCase):
         assert state is not None
         self.assertTrue(state.terminal)
         self.assertTrue(state.succeeded)
+
+    def test_scheduler_responses_and_accounting_delays_are_logged(self):
+        self.executor.job_id = "1" * 32
+        process = subprocess.CompletedProcess("sacct", 0, "", "accounting delayed")
+        with (
+            patch("judge.slurm_executor.subprocess.run", return_value=process),
+            self.assertLogs("judge.execution", level="INFO") as logs,
+        ):
+            self.assertIsNone(self.executor.status("123456"))
+        text = "\n".join(logs.output)
+        self.assertIn("sacct --jobs 123456", text)
+        self.assertIn("slurm.command.response", text)
+        self.assertIn('stdout=""', text)
+        self.assertIn("accounting delayed", text)
+        self.assertIn("slurm.status.unavailable", text)
+        self.assertIn("1" * 32, text)
+
+    def test_scheduler_failures_log_output_and_preserve_retry_exceptions(self):
+        for error in (
+            subprocess.CalledProcessError(1, "sacct", stderr="accounting unavailable"),
+            subprocess.TimeoutExpired("sacct", 30, stderr=b"accounting timeout"),
+            FileNotFoundError("sacct missing"),
+        ):
+            with (
+                self.subTest(error=type(error).__name__),
+                patch("judge.slurm_executor.subprocess.run", side_effect=error),
+                self.assertLogs("judge.execution", level="WARNING") as logs,
+                self.assertRaises(type(error)) as raised,
+            ):
+                self.executor.status("123456")
+            self.assertIs(raised.exception, error)
+            text = "\n".join(logs.output)
+            self.assertIn("slurm.command.failed", text)
+            self.assertIn(type(error).__name__, text)
+            if isinstance(error, subprocess.SubprocessError):
+                self.assertIn("accounting", text)
 
 
 if __name__ == "__main__":

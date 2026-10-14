@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from judge import database
+from judge.execution_logging import log_event
 from judge.models import Job, Submission
 from judge.tasks import TASKS
 
@@ -71,7 +72,7 @@ async def submit(
             detail="Remote GPU judge is not configured",
         )
     try:
-        return database.create_remote_job(
+        job = database.create_remote_job(
             database_path,
             submission,
             config=config,
@@ -82,6 +83,16 @@ async def submit(
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT, detail=str(error)
         ) from error
+    log_event(
+        "submission.received",
+        job_id=job.id,
+        task_id=submission.task_id,
+        repo_url=submission.repo_url,
+        commit_sha=submission.commit_sha,
+        host=config.host,
+        status=job.status.value,
+    )
+    return job
 
 
 @router.get("/jobs/{job_id}", response_model=Job)

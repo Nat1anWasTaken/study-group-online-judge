@@ -90,21 +90,47 @@ The perplexity evaluator supports causal language models loadable by
 `tokenizer_id` to use a fixed tokenizer for a lab. Lab 4 uses
 `openai-community/gpt2`; Lab 5 evaluates Llama 3.2 models with the tokenizer
 from [`meta-llama/Llama-3.2-1B`](https://huggingface.co/meta-llama/Llama-3.2-1B)
-and batches of one document with an 8,192-token limit. The generic evaluator
-defaults to 1,024 tokens, configurable through `max_length` and capped by the
-model's declared context length. Existing tokenizer padding tokens are preserved;
-otherwise EOS is used for padding. Padding stays on the right and is excluded
-from scoring.
+and bfloat16 FlashAttention-2 with whole documents greedily packed into an
+8,192-token budget. Documents are tokenized once, truncated to 8,192 tokens,
+and use independent attention and reset position IDs. Cross-document next-token
+targets are excluded; real EOS tokens are scored. Float32 cross-entropy uses
+2,048-token chunks. The evaluator explicitly selects
+`attn_implementation="kernels-community/flash-attn2"`; it uses the prebuilt Hub
+kernel through `kernels` without requiring the `flash-attn` package. Lab 5
+submission setup resolves the trusted judge's complete runtime requirements
+from `pyproject.toml` into the participant's `.venv`, including for older commits.
+The install is constrained to the exact versions in the prepared trusted
+environment, preserving its resolved CUDA stack and excluding the judge project
+itself from the constraints. Participant-only packages remain installed.
+Transformers 5, Hub 1, PyTorch 2, and Datasets 4 are required. It runs `uv pip check`
+and imports the evaluator and kernel integration with that same interpreter
+before submitting to Slurm; installed versions are recorded in `setup.log`.
+Model compilation uses
+`dynamic=True, fullgraph=True`.
+
+After changing runtime dependencies, run `uv sync --frozen`, `uv pip check`,
+`python -m judge.check_runtime`, and the test suite locally. Validate the same
+full-runtime installation against an older participant environment; installing
+a single new package is insufficient to establish compatibility.
+Lab 4 retains padded batches and truncates to its tokenizer's maximum length.
+Existing tokenizer padding tokens and padding side are preserved; otherwise EOS
+is used for padding. Padding is excluded from both the loss and token count,
+including next-token pairs whose preceding position is padding.
+Evaluation logs show the cumulative corpus perplexity and a token-weighted rolling
+perplexity over the latest 1,000 scored documents every 30 seconds during scoring,
+and once at completion. Both use `exp(sum(loss) / sum(scored tokens))`.
 
 ### Lab 5 submission
 
 Shuffle the entire `train` split of `allenai/dolma3_mix-150B-1025` with seed 42
 and reserve the last **50,000 documents** before tokenization or packing. Exclude
 all of those documents from training. Participants may use at most **10,000**
-of them for periodic validation. The OJ evaluates all 50,000, truncating each
-document to its first 8,192 tokenizer tokens; it does not pack documents or use
-sliding windows. The corpus score weights each non-padding next-token target
-equally, with document p90/p99 reported separately.
+of them for periodic validation. The OJ loads the already shuffled and filtered
+`train` split of `cerulean-works/study-group-lab5-eval` directly, without shuffling
+or selecting another tail. It evaluates all 50,000, truncating and packing as
+described above. The corpus score weights each valid next-token target equally,
+with document p90/p99 reported separately. Documents with fewer than two tokens
+are counted as skipped.
 
 Train the Llama 3.2 1B architecture from randomly initialized weights with an
 8,192-token training context. Upload both weights and tokenizer to Hugging Face.
@@ -248,6 +274,23 @@ docker compose ps
 docker compose logs --follow api worker ssh-worker tailscale
 ```
 
+GPU execution diagnostics are enabled at INFO level. Follow job receipt in
+`api` and execution in `ssh-worker` with:
+
+```console
+docker compose logs --follow api ssh-worker
+```
+
+Each event includes the judge `job_id`; scheduler events also include the
+`slurm_job_id` once assigned. Logs cover worker dispatch, SSH destination and
+operation, elapsed time, retries, remote setup, `sbatch` commands/responses,
+`sacct` commands/responses (the current status poller), accounting delays,
+terminal results, and pending W&B reporting. Remote diagnostics use stderr
+and are forwarded into the SSH worker logs; stdout remains the JSON snapshot.
+Captured diagnostics are limited to 8 KiB per field and configured credentials
+are redacted. SSH request bodies and environment dumps are not logged. Detailed
+dependency setup output remains in the remote job's `output/setup.log`.
+
 Compose does not publish the API on a host port. Configure Dokploy or your
 reverse proxy to reach the `api` service on port `8000`. SQLite and W&B files
 persist in `judge-data`; local CPU caches use the HF and uv cache volumes.
@@ -342,16 +385,66 @@ local and remote W&B publishers.
 
 ### Slack leaderboard notifications
 
-Notifications use Slack Markdown and the lab names in `ui/src/lab-names.json`
-(override the server file location with `JUDGE_LAB_NAMES_PATH`). Workflow Builder
-receives a single `text` variable; incoming app webhooks receive a `mrkdwn` block.
-If Workflow Builder displays Markdown markers literally, format the message in
-its Send a message step; webhook acknowledgment confirms triggering, not rendering.
+Notifications use the lab names in `ui/src/lab-names.json` (override the server
+file location with `JUDGE_LAB_NAMES_PATH`). The PNG card is uploaded directly to
+Slack and shared inline alongside compact ranking text. Podium entries use one
+medal emoji each; there are no oversized duplicate medal image accessories.
 
-After the initial baseline, automatic messages are sent only for a strictly better
+To enable inline image notifications:
+
+1. Open the Slack app at <https://api.slack.com/apps>.
+2. Under **OAuth & Permissions → Bot Token Scopes**, add **`files:write`**.
+3. Install or reinstall the app to your workspace, then copy its **Bot User OAuth
+   Token** (`xoxb-...`). Invite the app to the notification channel.
+4. In the channel's details, copy the **Channel ID**. Set
+   `JUDGE_SLACK_BOT_TOKEN` and `JUDGE_SLACK_CHANNEL_ID` in the deployment's `.env`.
+5. Set `JUDGE_SLACK_DAILY_TIME=19:00` and `JUDGE_SLACK_TIMEZONE=Asia/Taipei`.
+6. After deploying this code, rebuild and recreate the API:
+   `docker compose up -d --build --force-recreate api`.
+
+Only `files:write` is required: the API gets a Slack upload URL, sends the PNG
+bytes, then calls `files.completeUploadExternal` with the destination channel
+and ranking blocks. No public image server or `JUDGE_PUBLIC_URL` is needed.
+The bot upload configuration takes precedence over `JUDGE_SLACK_WEBHOOK_URL`.
+The running API detects records and schedules the daily summary itself.
+
+An existing incoming app webhook or webhook-triggered Workflow Builder workflow
+can still be used for **text-only** notifications when bot upload is unset.
+Workflow Builder receives its existing single `text` variable for the Send a
+message step. A partially configured bot upload is an error and retries rather
+than silently dropping its image. Upload or sharing failures retain the pending
+notification for retry; it is acknowledged only after Slack confirms the share.
+
+After the initial baseline, SOTA alerts are sent only for a strictly better
 all-time score (respecting minimize/maximize), or a new earliest passing submission.
 Ties and changes below first place stay quiet. Persisted records survive restarts
-and are not lowered when a run disappears. Failed Slack deliveries retry.
+and are not lowered when a run disappears. Messages start with
+`🧪 New record by {username}!` and list the current top three as `🥇 username: score`.
+Failed Slack deliveries retry on the next successful source refresh.
+
+Daily messages start with `🧪 Daily Updates` and include **every ranked participant
+in every lab**, with separate messages per lab and pages of 20 participants.
+The default schedule is **19:00 Asia/Taipei**; configure `JUDGE_SLACK_DAILY_TIME`
+(`HH:MM`) and `JUDGE_SLACK_TIMEZONE` (IANA timezone) to change it. Delivery happens
+on the first successful leaderboard refresh at or after that time. Daily delivery
+is acknowledged per lab and date, saved across restarts, and retried on failure.
+Partially delivered labs resume from their next page using the saved standings,
+so earlier pages are not repeated or reordered when new submissions arrive.
+Messages are paced to Slack's webhook limits and honor `Retry-After` backoff.
+If the service was offline on previous days, it sends only today's summary.
+
+PNG cards are Chromium screenshots of the actual React leaderboard, using its
+CSS, fonts, GitHub avatars, scores, attempt counts, and Taipei submission times.
+The UI receives the same frozen snapshot as the message. Images are saved in
+`leaderboard-images/` next to the database before their bytes are uploaded to
+Slack. The Docker image includes the built UI and Chromium. For a Python-only
+installation, build `ui/` with `npm ci --prefix ui` and `npm run build --prefix ui`,
+then run `playwright install --with-deps --only-shell chromium`. Set `JUDGE_UI_DIST`
+to the built UI directory if needed, and `JUDGE_CHROMIUM_EXECUTABLE` to use an
+existing Chromium installation.
+
+The OJ frontend opens the lab with the highest lab number by default and keeps
+the user's selected lab during refreshes.
 
 The API container also needs `WANDB_API_KEY`: workers publish submissions, while
 `api` independently reads W&B for the leaderboard. Compose's `.env` supplies

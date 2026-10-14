@@ -10,6 +10,7 @@ from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
 from judge.database import migrate_database
+from judge.execution_logging import configure_logging
 from judge.leaderboard import LeaderboardService
 from judge.routers import health, leaderboard, submissions
 from judge.ssh import RemoteConfig
@@ -18,6 +19,7 @@ from judge.ssh import RemoteConfig
 @asynccontextmanager
 async def lifespan(judge_app: FastAPI) -> AsyncIterator[None]:
     load_dotenv()
+    configure_logging()
 
     api_token = os.environ.get("JUDGE_API_TOKEN")
     if not api_token:

@@ -1,15 +1,26 @@
 """Tailscale SSH transport and immutable remote job configuration."""
 
 import json
+import logging
 import os
 import shlex
 import subprocess
+import time
 from importlib.resources import files
 from pathlib import PurePosixPath
+from typing import TypedDict
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from judge.execution_logging import log_event
 from judge.models import JudgeResult, Resources, Submission
+
+
+class _SSHLogContext(TypedDict):
+    job_id: str
+    host: str
+    user: str
+    operation: str
 
 
 class RemoteConfig(BaseModel):
@@ -130,11 +141,69 @@ class TailscaleSSH:
             check=False,
         )
 
+    def _execute(
+        self,
+        request: RemoteRequest,
+        operation: str,
+        command: str,
+        payload: str,
+        timeout: int,
+    ):
+        # Commands can embed bootstrap code; stdin contains the request. Log
+        # operation metadata rather than dumping either of those channels.
+        context: _SSHLogContext = {
+            "job_id": request.job_id,
+            "host": request.config.host,
+            "user": request.config.user,
+            "operation": operation,
+        }
+        started = time.monotonic()
+        log_event("ssh.started", **context, timeout_seconds=timeout)
+        try:
+            process = self._run(request.config, command, payload, timeout)
+        except Exception as error:
+            log_event(
+                "ssh.failed",
+                level=logging.WARNING,
+                **context,
+                elapsed_seconds=round(time.monotonic() - started, 3),
+                error_type=type(error).__name__,
+                # str(TimeoutExpired) includes the complete command/script.
+                error="SSH command timed out"
+                if isinstance(error, subprocess.TimeoutExpired)
+                else "SSH command could not complete",
+                stderr=getattr(error, "stderr", None),
+            )
+            raise
+        log_event(
+            "ssh.finished",
+            **context,
+            level=logging.WARNING if process.returncode else logging.INFO,
+            elapsed_seconds=round(time.monotonic() - started, 3),
+            returncode=process.returncode,
+        )
+        # Successful helpers emit scheduler diagnostics on stderr too. Keep
+        # them visible locally while leaving stdout available for JSON parsing.
+        if isinstance(process.stderr, str) and process.stderr:
+            for line in process.stderr.splitlines():
+                log_event(
+                    "ssh.diagnostics",
+                    **context,
+                    level=logging.WARNING if process.returncode else logging.INFO,
+                    stderr=line,
+                )
+        return process
+
     def prepare(self, request: RemoteRequest) -> RemoteSnapshot | None:
         config = request.config
         key = (config, request.job_id)
         if key in self._prepared:
             return None
+        log_event(
+            "ssh.bootstrap.started",
+            job_id=request.job_id,
+            trusted_root=request.trusted_root,
+        )
         script = files("judge").joinpath("setup-repo.sh").read_text()
         command = shlex.join(
             [
@@ -170,7 +239,7 @@ class TailscaleSSH:
                 ),
             ]
         )
-        process = self._run(config, command, script, 1800)
+        process = self._execute(request, "bootstrap", command, script, 1800)
         if process.returncode:
             # SSH failures can happen after the remote command began; retry safely.
             if (
@@ -192,6 +261,7 @@ class TailscaleSSH:
                 raise ValueError(
                     "Remote job identity does not match its stored request"
                 )
+            log_event("ssh.bootstrap.cached", job_id=request.job_id)
             return RemoteSnapshot.model_validate(cached["terminal"]).model_copy(
                 update={
                     "setup_offset": request.setup_offset,
@@ -199,6 +269,7 @@ class TailscaleSSH:
                 }
             )
         self._prepared.add(key)
+        log_event("ssh.bootstrap.ready", job_id=request.job_id)
         return None
 
     def poll(self, request: RemoteRequest) -> RemoteSnapshot:
@@ -219,11 +290,21 @@ class TailscaleSSH:
                 "judge.remote_job",
             ]
         )
-        process = self._run(request.config, command, request.model_dump_json(), 1800)
+        process = self._execute(
+            request, "poll", command, request.model_dump_json(), 1800
+        )
         if process.returncode:
             self._prepared.discard((request.config, request.job_id))
             raise ConnectionError(process.stderr[-8192:] or "Remote helper failed")
         snapshot = RemoteSnapshot.model_validate_json(process.stdout)
+        log_event(
+            "ssh.snapshot.received",
+            job_id=request.job_id,
+            slurm_job_id=snapshot.slurm_job_id,
+            slurm_state=snapshot.slurm_state,
+            report_pending=snapshot.report_pending,
+            terminal=snapshot.result is not None or snapshot.error is not None,
+        )
         if (
             snapshot.result is not None or snapshot.error
         ) and not snapshot.report_pending:
@@ -257,8 +338,9 @@ class TailscaleSSH:
                 script,
             ]
         )
-        process = self._run(
-            request.config,
+        process = self._execute(
+            request,
+            "bootstrap-report",
             command,
             json.dumps(
                 {

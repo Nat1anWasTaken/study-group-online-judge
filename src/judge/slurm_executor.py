@@ -1,12 +1,17 @@
 """Submit a participant's sbatch file to Nano4 without Docker."""
 
+import logging
 import math
 import os
 import re
+import shlex
 import subprocess
+import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TypedDict
 
+from judge.execution_logging import log_event
 from judge.models import Resources
 from judge.repository import SECRET_ENVIRONMENT_VARIABLES
 
@@ -22,6 +27,20 @@ TERMINAL_STATES = {
     "PREEMPTED",
     "TIMEOUT",
 }
+# Exclude entire nodes: Slurm cannot safely select around the faulty physical
+# GPUs (001: GPU 7, 003: GPU 6, 027: GPU 0, all requiring a reset).
+EXCLUDE_NODES = [
+    "25a-hgpn001",
+    "25a-hgpn003",
+    "25a-hgpn027",
+    "25a-hgpn062",
+    "25a-hgpn145",
+]
+
+
+class _SlurmLogContext(TypedDict):
+    job_id: str | None
+    command: str
 
 
 @dataclass(frozen=True)
@@ -47,6 +66,7 @@ class SlurmExecutor:
         trusted_root: Path,
         sbatch_binary: str = "sbatch",
         sacct_binary: str = "sacct",
+        job_id: str | None = None,
     ) -> None:
         if not re.fullmatch(r"[A-Za-z0-9_-]+", account):
             raise ValueError("Invalid Slurm account")
@@ -57,6 +77,46 @@ class SlurmExecutor:
         self.trusted_root = trusted_root.resolve()
         self.sbatch_binary = sbatch_binary
         self.sacct_binary = sacct_binary
+        self.job_id = job_id
+
+    def _run_command(self, command: list[str], **kwargs):
+        started = time.monotonic()
+        context: _SlurmLogContext = {
+            "job_id": self.job_id,
+            "command": shlex.join(command),
+        }
+        log_event("slurm.command.started", **context)
+        try:
+            process = subprocess.run(
+                command,
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=120,
+                **kwargs,
+            )
+        except (subprocess.SubprocessError, OSError) as error:
+            log_event(
+                "slurm.command.failed",
+                level=logging.WARNING,
+                **context,
+                elapsed_seconds=round(time.monotonic() - started, 3),
+                error_type=type(error).__name__,
+                error=str(error),
+                returncode=getattr(error, "returncode", None),
+                stdout=getattr(error, "stdout", None),
+                stderr=getattr(error, "stderr", None),
+            )
+            raise
+        log_event(
+            "slurm.command.response",
+            **context,
+            elapsed_seconds=round(time.monotonic() - started, 3),
+            returncode=process.returncode,
+            stdout=process.stdout,
+            stderr=process.stderr,
+        )
+        return process
 
     def build_submit_command(
         self,
@@ -97,6 +157,7 @@ class SlurmExecutor:
             f"--chdir={submission.resolve()}",
             f"--output={(output_directory / 'slurm.log').resolve()}",
             f"--error={(output_directory / 'slurm.log').resolve()}",
+            f"--exclude={','.join(EXCLUDE_NODES)}" if EXCLUDE_NODES else "",
             str(script.resolve()),
         ]
 
@@ -137,25 +198,25 @@ class SlurmExecutor:
                 ),
             }
         )
-        process = subprocess.run(
-            command,
-            check=True,
-            capture_output=True,
-            text=True,
-            env=environment,
-            timeout=30,
-        )
+        process = self._run_command(command, env=environment)
         job_id = process.stdout.strip().split(";", maxsplit=1)[0]
         if SLURM_JOB_ID.fullmatch(job_id) is None:
+            log_event(
+                "slurm.submission.invalid_response",
+                level=logging.ERROR,
+                job_id=self.job_id,
+                stdout=process.stdout,
+            )
             raise RuntimeError(
                 f"Unrecognized sbatch response: {process.stdout.strip()}"
             )
+        log_event("slurm.submission.accepted", job_id=self.job_id, slurm_job_id=job_id)
         return job_id
 
     def status(self, slurm_job_id: str) -> SlurmState | None:
         if SLURM_JOB_ID.fullmatch(slurm_job_id) is None:
             raise ValueError("Invalid Slurm job ID")
-        process = subprocess.run(
+        process = self._run_command(
             [
                 self.sacct_binary,
                 "--jobs",
@@ -164,13 +225,21 @@ class SlurmExecutor:
                 "--parsable2",
                 "--noheader",
             ],
-            check=True,
-            capture_output=True,
-            text=True,
-            timeout=30,
         )
         for line in process.stdout.splitlines():
             fields = line.split("|")
             if len(fields) >= 3 and fields[0] == slurm_job_id:
-                return SlurmState(fields[1].split(" ", maxsplit=1)[0], fields[2])
+                state = SlurmState(fields[1].split(" ", maxsplit=1)[0], fields[2])
+                log_event(
+                    "slurm.status",
+                    job_id=self.job_id,
+                    slurm_job_id=slurm_job_id,
+                    state=state.state,
+                    exit_code=state.exit_code,
+                    terminal=state.terminal,
+                )
+                return state
+        log_event(
+            "slurm.status.unavailable", job_id=self.job_id, slurm_job_id=slurm_job_id
+        )
         return None

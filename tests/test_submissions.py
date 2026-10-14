@@ -119,7 +119,10 @@ class SubmissionRouteTests(unittest.TestCase):
         self.assertEqual(response.status_code, 422)
 
     def test_gpu_submission_queues_without_connecting_remotely(self):
-        with patch("judge.ssh.TailscaleSSH.poll") as poll:
+        with (
+            patch("judge.ssh.TailscaleSSH.poll") as poll,
+            self.assertLogs("judge.execution", level="INFO") as logs,
+        ):
             response = self.client.post(
                 "/submissions",
                 headers=self.gpu_headers(),
@@ -136,6 +139,11 @@ class SubmissionRouteTests(unittest.TestCase):
         self.assertIsNone(response.json()["slurm_job_id"])
         self.assertEqual(response.json()["id"], retry.json()["id"])
         poll.assert_not_called()
+        text = "\n".join(logs.output)
+        self.assertIn("submission.received", text)
+        self.assertIn(response.json()["id"], text)
+        self.assertIn('host="nano4"', text)
+        self.assertNotIn("Bearer secret", text)
 
     def test_gpu_submission_requires_remote_configuration(self):
         app.state.remote_config = None
