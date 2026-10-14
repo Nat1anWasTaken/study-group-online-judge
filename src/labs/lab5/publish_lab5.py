@@ -38,6 +38,23 @@ def main():
             weight_files = json.loads(index_path.read_text())["weight_map"].values()
             assert all((model_dir / filename).is_file() for filename in weight_files)
 
+        final_eval_path = run_dir / "eval-8k.json"
+        final_eval = json.loads(final_eval_path.read_text()) if final_eval_path.exists() else {
+            "perplexity": result["perplexity"], "documents": config["eval_documents"],
+        }
+        lineage_path = run_dir / "training-lineage.json"
+        lineage = json.loads(lineage_path.read_text()) if lineage_path.exists() else {}
+        total_hours = lineage.get("trajectory_h200_hours_estimate", result["h200_hours"])
+        hidden_decay = lineage.get("hidden_weight_decay", config["weight_decay"])
+        lineage_note = ""
+        if lineage:
+            lineage_note = (
+                f"Resumed from [{lineage['prefix_run']}]({lineage['prefix_wandb_url']}) "
+                f"at step {lineage['prefix_step']}. Total tokens include this prefix. "
+                "Total H200-hours include the prefix; result.json runtime describes "
+                "the continuation. See training-lineage.json for accounting."
+            )
+
         batch_tokens = (
             config["world_size"] * config["micro_batch_size"]
             * config["gradient_accumulation_steps"] * config["sequence_length"]
@@ -69,17 +86,20 @@ matrices and AdamW for the tied embedding/output table and normalization paramet
 | Muon learning-rate adjustment | {config['muon_adjust_lr_fn']} |
 | AdamW betas | {config['adamw_betas']} |
 | Momentum | {config['momentum']} |
-| Matrix and embedding weight decay | {config['weight_decay']} |
+| Hidden matrix weight decay | {hidden_decay} |
+| Embedding weight decay | {config['weight_decay']} |
 | Normalization weight decay | {config['normalization_weight_decay']} |
 | Schedule | {config['schedule']} |
 | Warmup fraction | {config['warmup_ratio']} |
 | Schedule basis | {config['schedule_basis']} |
 | Training tokens processed | {result['total_tokens_seen']} |
-| H200-hours | {result['h200_hours']:.4f} |
-| Heldout perplexity | {result['perplexity']:.4f} |
-| Evaluated documents | {config['eval_documents']} |
+| Approximate total H200-hours | {total_hours:.4f} |
+| Heldout perplexity | {final_eval['perplexity']:.4f} |
+| Evaluated documents | {final_eval['documents']} |
 
 [W&B run]({result['wandb_url']})
+
+{lineage_note}
 
 Documents were shuffled with seed {config['seed']} before tokenization, and the
 last {config['holdout_documents']} documents were excluded from training.
@@ -88,13 +108,15 @@ set, with individual documents truncated to {config['sequence_length']} tokens.
 Evaluation ran inside training. This is not an OJ score on all heldout documents.
 
 The full recipe is in `training-config.json`, the final result is in `result.json`,
-and the in-training evaluation curve is in `eval-curve.jsonl`.
+with final holdout scores in `eval-8k.json` when available.
 """
         operations = [
             CommitOperationAdd(path_in_repo=file.name, path_or_fileobj=file)
             for file in sorted(model_dir.iterdir()) if file.is_file()
         ]
-        for filename in ("training-config.json", "result.json", "eval-curve.jsonl"):
+        for filename in ("training-config.json", "result.json", "eval-8k.json", "training-lineage.json"):
+            if not (run_dir / filename).exists():
+                continue
             operations.append(CommitOperationAdd(
                 path_in_repo=filename, path_or_fileobj=run_dir / filename,
             ))

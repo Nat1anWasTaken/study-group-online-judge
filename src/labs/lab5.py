@@ -1,1 +1,48 @@
-eval_model_id = "Nat1an/cerulean-lab5-muon-pilot-j511584"
+eval_model_id = "Nat1an/cerulean-lab5-muon-3b-j539809"
+training_run_url = "https://wandb.ai/cerulean-labs/lab5-training-llama/runs/y1p5v3we"
+training_config = {
+    "random_initialization": True,
+    "architecture": "Llama-3.2-1B",
+    "context_length": 8192,
+    "training_tokens": 2999975936,
+    "training_steps": 11444,
+    "tokens_per_step": 262144,
+    "gpu_count": 8,
+    "h200_hours": 21.033961296611363,
+    "continuation_wall_hours": 2.1978673704465232,
+    "prefix_h200_hours": 3.451022318204244,
+    "prefix_step": 1800,
+    "prefix_training_run_url": "https://wandb.ai/cerulean-labs/lab5-training-llama/runs/ekhblbpn",
+    "optimizer_parameter_groups": {
+        "hidden_matrices": {
+            "optimizer": "Muon with Polar Express",
+            "learning_rate": 0.001,
+            "weight_decay": 0.2,
+            "momentum": 0.95,
+            "orthogonalization_steps": 5,
+            "lr_adjustment": "match_rms_adamw",
+        },
+        "tied_embedding_output": {
+            "optimizer": "AdamW",
+            "learning_rate": 0.001,
+            "weight_decay": 0.1,
+            "betas": [0.9, 0.95],
+        },
+        "normalization": {
+            "optimizer": "AdamW",
+            "learning_rate": 0.001,
+            "weight_decay": 0.0,
+            "betas": [0.9, 0.95],
+        },
+    },
+    "schedule": "warmup_200_steps_stable_linear_decay_0.4",
+    "warmup_steps": 200,
+    "max_grad_norm": 1.0,
+    "seed": 42,
+    "holdout_documents": 50000,
+    "holdout_shuffle_seed": 42,
+    "split_before_tokenizing_and_packing": True,
+    "validation_documents": 8192,
+    "document_attention_mask": True,
+    "training_document_truncation": 8192,
+}
