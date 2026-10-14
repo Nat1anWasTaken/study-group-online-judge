@@ -49,11 +49,11 @@ DATA_SEED = 42
 EVAL_DOCUMENTS = 1024
 FINAL_EVAL_DOCUMENTS = 8192
 MAX_DOCUMENTS = 128
-TRAIN_STEPS = int(os.environ.get("LAB5_STEPS", "3000"))
-SAVE_STEPS = {int(step) for step in os.environ.get("LAB5_SAVE_STEPS", "").split(",") if step}
+TRAIN_STEPS = int(os.environ.get("LAB5_STEPS", "11444"))
+SAVE_STEPS = {int(step) for step in os.environ.get("LAB5_SAVE_STEPS", "6866").split(",") if step}
 RESUME = os.environ.get("LAB5_RESUME")
 DECAY_START = TRAIN_STEPS * (1 - DECAY_FRACTION)
-experiment_name = f"muon-adamw-lr{LEARNING_RATE:g}-wd0.1-muonwd0.2-polarexpress-docmask-trunc8k-wsd40-b262144-s42"
+experiment_name = f"muon-adamw-lr{LEARNING_RATE:g}-wd0.1-muonwd0.2-polarexpress-docmask-trunc8k-wsd40-b262144-s42-3b"
 
 
 def learning_rate_scale(step):
@@ -232,7 +232,7 @@ def main():
             "eval_seconds": eval_seconds,
             "allocation_seconds": allocation_seconds,
             "finalize_reserve_seconds": 300,
-            "max_h200_hours": 64,
+            "max_h200_hours": 32,
             "attention_implementation": "flash_attention_2",
             "gradient_checkpointing": False,
             "torch_compile": True,
