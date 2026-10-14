@@ -53,7 +53,7 @@ TRAIN_STEPS = int(os.environ.get("LAB5_STEPS", "3000"))
 SAVE_STEPS = {int(step) for step in os.environ.get("LAB5_SAVE_STEPS", "1050").split(",") if step}
 RESUME = os.environ.get("LAB5_RESUME")
 DECAY_START = TRAIN_STEPS * (1 - DECAY_FRACTION)
-experiment_name = f"muon-adamw-lr{LEARNING_RATE:g}-wd0.1-muonwd0.2-polarexpress-docmask-trunc8k-wsd30-b262144-s42"
+experiment_name = f"soap-adamw-lr{LEARNING_RATE:g}-wd0.1-aligned-docmask-trunc8k-wsd30-b262144-s42"
 
 
 def learning_rate_scale(step):
@@ -211,7 +211,7 @@ def main():
             "max_train_tokens": 6000000000,
             "micro_batch_size": 1,
             "gradient_accumulation_steps": ACCUMULATION,
-            "optimizer_recipe": "muon_hidden_adamw_rest",
+            "optimizer_recipe": "soap_hidden_adamw_rest",
             "learning_rate": LEARNING_RATE,
             "muon_adjust_lr_fn": "match_rms_adamw",
             "adamw_betas": ADAM_BETAS,
