@@ -13,7 +13,7 @@
 
 set -euo pipefail
 cd "$SLURM_SUBMIT_DIR"
-export LAB5_DATA="${LAB5_DATA:-/home/nat1andotxyz/lab5/dolma-seed42-8192-v1}"
+export LAB5_DATA="${LAB5_DATA:-/work/u9216411/acd115198/lab5-data/dolma-seed42-8192-trunc8k}"
 export REPO=/work/u9216411/acd115198/study-group-online-judge
 export UV_PROJECT_ENVIRONMENT="$REPO/work/lab4-fa2-env"
 export TOKENIZERS_PARALLELISM=false
