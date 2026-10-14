@@ -1,43 +1,61 @@
 import torch
 
-POLAR_EXPRESS = [
-    (8.156554524902461, -22.48329292557795, 15.878769915207462),
-    (4.042929935166739, -2.808917465908714, 0.5000178451051316),
-    (3.8916678022926607, -2.772484153217685, 0.5060648178503393),
-    (3.285753657755655, -2.3681294933425376, 0.46449024233003106),
-    (2.3465413258596377, -1.7097828382687081, 0.42323551169305323),
-]
 
+class SOAP(torch.optim.Optimizer):
+    def __init__(self, params, lr, weight_decay, betas):
+        super().__init__(params, {"lr": lr, "weight_decay": weight_decay, "betas": betas})
 
-@torch.compile(fullgraph=True, dynamic=False)
-def orthogonalize(matrix):
-    x = matrix.bfloat16()
-    transposed = x.size(0) > x.size(1)
-    if transposed:
-        x = x.mT
-    x = x / (x.norm() * 1.02 + 1e-6)
-    for a, b, c in POLAR_EXPRESS:
-        gram = x @ x.mT
-        x = a * x + (b * gram + c * gram @ gram) @ x
-    return (x.mT if transposed else x).to(matrix.dtype)
-
-
-class Muon(torch.optim.Optimizer):
-    def __init__(self, params, lr, weight_decay, momentum):
-        super().__init__(params, {"lr": lr, "weight_decay": weight_decay, "momentum": momentum})
+    @staticmethod
+    def rotate(x, bases, back=False):
+        left, right = bases
+        if left is not None:
+            x = (left if back else left.mT) @ x
+        if right is not None:
+            x = x @ (right.mT if back else right)
+        return x
 
     @torch.no_grad()
     def step(self):
         for group in self.param_groups:
+            beta1, beta2 = group["betas"]
             for parameter in group["params"]:
+                grad = parameter.grad.float()
                 state = self.state[parameter]
                 if not state:
-                    state["momentum_buffer"] = torch.zeros_like(parameter)
-                buffer = state["momentum_buffer"]
-                buffer.lerp_(parameter.grad, 1 - group["momentum"])
-                update = orthogonalize(parameter.grad.lerp(buffer, group["momentum"]))
+                    state["step"] = 0
+                    state["exp_avg"] = torch.zeros_like(grad)
+                    state["exp_avg_sq"] = torch.zeros_like(grad)
+                    state["grams"] = [
+                        0.05 * (grad @ grad.mT if side == 0 else grad.mT @ grad) if n <= 2048 else None
+                        for side, n in enumerate(grad.shape)
+                    ]
+                    state["bases"] = [
+                        None if gram is None else torch.linalg.eigh(gram)[1].flip(1)
+                        for gram in state["grams"]
+                    ]
+                    continue
+                state["step"] += 1
+                bases = state["bases"]
+                state["exp_avg"].lerp_(grad, 1 - beta1)
+                state["exp_avg_sq"].lerp_(self.rotate(grad, bases).square(), 1 - beta2)
+                direction = self.rotate(
+                    self.rotate(state["exp_avg"], bases) / (state["exp_avg_sq"].sqrt() + 1e-8),
+                    bases,
+                    back=True,
+                )
+                correction = (1 - beta2 ** state["step"]) ** 0.5 / (1 - beta1 ** state["step"])
+                parameter.add_(direction, alpha=-group["lr"] * correction)
                 parameter.mul_(1 - group["lr"] * group["weight_decay"])
-                parameter.add_(update, alpha=-group["lr"] * 0.2 * max(parameter.shape) ** 0.5)
+                for side, gram in enumerate(state["grams"]):
+                    if gram is None:
+                        continue
+                    gram.lerp_(grad @ grad.mT if side == 0 else grad.mT @ grad, 0.05)
+                    if state["step"] % 10 == 0:
+                        basis = bases[side]
+                        product = gram @ basis
+                        order = (basis * product).sum(0).argsort(descending=True)
+                        state["exp_avg_sq"] = state["exp_avg_sq"].index_select(side, order)
+                        bases[side] = torch.linalg.qr(product[:, order]).Q
 
 
 class MuonAdamW(torch.optim.Optimizer):
@@ -53,7 +71,7 @@ class MuonAdamW(torch.optim.Optimizer):
             else:
                 assert parameter.ndim == 1
                 no_decay.append(parameter)
-        self.muon = Muon(matrices, lr=lr, weight_decay=2 * weight_decay, momentum=0.95)
+        self.muon = SOAP(matrices, lr=lr, weight_decay=weight_decay, betas=betas)
         self.adam = torch.optim.AdamW(
             [
                 {"params": [embedding], "weight_decay": weight_decay},
