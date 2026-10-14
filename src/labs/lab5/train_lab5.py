@@ -38,22 +38,22 @@ ALL_ATTENTION_FUNCTIONS.register(
     "flash_attention_2", flash_attention_with_matching_dtype
 )
 
-LEARNING_RATE = 1e-3
+LEARNING_RATE = 1.5e-3
 WEIGHT_DECAY = 0.1
 ADAM_BETAS = (0.9, 0.95)
 ACCUMULATION = 4
 WARMUP_STEPS = 200
-DECAY_FRACTION = 0.3
+DECAY_FRACTION = 0.4
 SEED = 42
 DATA_SEED = 42
 EVAL_DOCUMENTS = 1024
 FINAL_EVAL_DOCUMENTS = 8192
 MAX_DOCUMENTS = 128
 TRAIN_STEPS = int(os.environ.get("LAB5_STEPS", "3000"))
-SAVE_STEPS = {int(step) for step in os.environ.get("LAB5_SAVE_STEPS", "1050").split(",") if step}
+SAVE_STEPS = {int(step) for step in os.environ.get("LAB5_SAVE_STEPS", "").split(",") if step}
 RESUME = os.environ.get("LAB5_RESUME")
 DECAY_START = TRAIN_STEPS * (1 - DECAY_FRACTION)
-experiment_name = f"muon-adamw-lr{LEARNING_RATE:g}-wd0.1-muonwd0.2-polarexpress-docmask-trunc8k-wsd30-b262144-s42"
+experiment_name = f"muon-adamw-lr{LEARNING_RATE:g}-adamwlr0.001-wd0.1-muonwd0.133333-polarexpress-docmask-trunc8k-wsd40-b262144-s42"
 
 
 def learning_rate_scale(step):
@@ -308,6 +308,8 @@ def main():
         step_start = time.monotonic()
         for group in optimizer.param_groups:
             group["lr"] = LEARNING_RATE * learning_rate_scale(step)
+        for group in optimizer.adam.param_groups:
+            group["lr"] = 1e-3 * learning_rate_scale(step)
         optimizer.zero_grad(set_to_none=True)
         for micro_step in range(ACCUMULATION):
             input_ids = next(batches)["input_ids"].to(device, dtype=torch.long, non_blocking=True)

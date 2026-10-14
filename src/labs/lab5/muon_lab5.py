@@ -53,7 +53,7 @@ class MuonAdamW(torch.optim.Optimizer):
             else:
                 assert parameter.ndim == 1
                 no_decay.append(parameter)
-        self.muon = Muon(matrices, lr=lr, weight_decay=2 * weight_decay, momentum=0.95)
+        self.muon = Muon(matrices, lr=lr, weight_decay=2 * weight_decay / 1.5, momentum=0.95)
         self.adam = torch.optim.AdamW(
             [
                 {"params": [embedding], "weight_decay": weight_decay},
