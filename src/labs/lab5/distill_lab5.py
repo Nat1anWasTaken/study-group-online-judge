@@ -94,7 +94,7 @@ class DistillationLoss(torch.nn.Module):
         ).last_hidden_state[0, :-1]
         logits = self.model.lm_head(hidden_states).float()
         log_normalizer = logits.logsumexp(-1)
-        cross_entropy = (log_normalizer - logits.gather(-1, input_ids[0, 1:, None])[:, 0]).mean()
+        cross_entropy = F.cross_entropy(logits, input_ids[0, 1:])
         student_top = logits.gather(-1, teacher_ids[:-1].long()) - log_normalizer[:, None]
         student_tail = (1 - student_top.exp().sum(-1)).clamp_min(TAIL_EPSILON)
         target_tail = teacher_tail[:-1]
@@ -288,6 +288,7 @@ def main():
     cache_metadata, block_ids = load_teacher_cache(
         cache_dir, data_dir, manifest, training_data, tokenizer, indices, rank, world_size
     )
+    indices = indices[: TRAIN_STEPS * ACCUMULATION]
     batches = iter(DataLoader(
         TeacherCacheDataset(training_data, cache_dir, block_ids), batch_size=1, sampler=indices, num_workers=2,
         pin_memory=True, persistent_workers=True,
@@ -368,7 +369,7 @@ def main():
             "tail_epsilon": TAIL_EPSILON,
             "loss": "alpha * hard cross-entropy + (1 - alpha) * forward KL(teacher || student) over teacher top-k tokens plus one tail bucket, student full-vocabulary normalizer",
             "teacher_top_k_rescaled_to": "1 - stored tail mass",
-            "train_loss_metric": "train/loss is hard cross-entropy only",
+            "train_loss_metric": "train/loss is hard cross-entropy only; train/distill_loss is mean forward KL over the same logging interval; mixed_loss is local-only in distillation-curve.jsonl",
             "student_initialization": "random",
             "teacher_cache": str(cache_dir),
             "cache_metadata": cache_metadata,
@@ -389,7 +390,6 @@ def main():
             print(json.dumps(metrics), flush=True)
 
     def record_distillation():
-        dist.all_reduce(interval_distillation)
         if rank == 0:
             metrics = {
                 "step": completed_steps,
@@ -466,9 +466,11 @@ def main():
 
         if step % 10 == 0 or step == max_steps:
             dist.all_reduce(interval_loss)
+            dist.all_reduce(interval_distillation)
             if rank == 0:
                 record({
                     "train/loss": interval_loss.item() / (world_size * interval_steps),
+                    "train/distill_loss": interval_distillation[0].item() / (world_size * interval_steps),
                     "train/grad_norm": gradient_norm.item(),
                     "train/learning_rate": optimizer.param_groups[0]["lr"],
                     "train/adamw_learning_rate": optimizer.param_groups[1]["lr"],
@@ -498,9 +500,11 @@ def main():
 
     if interval_steps:
         dist.all_reduce(interval_loss)
+        dist.all_reduce(interval_distillation)
         if rank == 0:
             wandb.log({
                 "train/loss": interval_loss.item() / (world_size * interval_steps),
+                "train/distill_loss": interval_distillation[0].item() / (world_size * interval_steps),
                 "train/grad_norm": gradient_norm.item(),
                 "train/learning_rate": optimizer.param_groups[0]["lr"],
                 "train/tokens_per_second": tokens_per_step / step_seconds.item(),
