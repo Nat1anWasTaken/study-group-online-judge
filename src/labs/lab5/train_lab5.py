@@ -6,6 +6,7 @@ import time
 from contextlib import nullcontext
 from pathlib import Path
 
+import numpy as np
 import torch
 import torch.distributed as dist
 import torch.nn.functional as F
@@ -13,7 +14,7 @@ import wandb
 from datasets import load_from_disk
 from muon_lab5 import MuonAdamW
 from torch.nn.parallel import DistributedDataParallel
-from torch.utils.data import DataLoader, DistributedSampler
+from torch.utils.data import DataLoader, Dataset
 from transformers import AutoConfig, AutoTokenizer, LlamaForCausalLM, set_seed
 from transformers.integrations.flash_attention import (
     flash_attention_forward as hf_flash_attention_forward,
@@ -49,11 +50,14 @@ DATA_SEED = 42
 EVAL_DOCUMENTS = 1024
 FINAL_EVAL_DOCUMENTS = 8192
 MAX_DOCUMENTS = 128
-TRAIN_STEPS = int(os.environ.get("LAB5_STEPS", "9000"))
-SAVE_STEPS = {int(step) for step in os.environ.get("LAB5_SAVE_STEPS", "5400").split(",") if step}
+TRAIN_STEPS = int(os.environ.get("LAB5_STEPS", "4000"))
+SAVE_STEPS = {int(step) for step in os.environ.get("LAB5_SAVE_STEPS", "2400").split(",") if step}
 RESUME = os.environ.get("LAB5_RESUME")
 DECAY_START = TRAIN_STEPS * (1 - DECAY_FRACTION)
-experiment_name = f"muon-adamw-lr{LEARNING_RATE:g}-wd{WEIGHT_DECAY:g}-muonwd{2 * WEIGHT_DECAY:g}-polarexpress-precond-exactrms0.2-docmask-trunc8k-wsd40-b65536-beta2token-s42"
+DISTILLATION_ALPHA = 0.5
+experiment_name = f"muon-adamw-lr{LEARNING_RATE:g}-wd{WEIGHT_DECAY:g}-muonwd{2 * WEIGHT_DECAY:g}-polarexpress-precond-exactrms0.2-docmask-trunc8k-wsd40-b65536-beta2token-distill8b-a{DISTILLATION_ALPHA:g}-s42"
+TAIL_EPSILON = 1e-7
+TEACHER_ARRAYS = ("teacher_ids", "teacher_log_probs", "teacher_tail")
 
 
 def learning_rate_scale(step):
@@ -69,17 +73,51 @@ class TrainingLoss(torch.nn.Module):
         super().__init__()
         self.model = model
 
-    def forward(self, input_ids, position_ids, cu_seq_lens):
-        return self.model(
+    def forward(self, input_ids, position_ids, cu_seq_lens, teacher_ids, teacher_log_probs, teacher_tail):
+        hidden_states = self.model.model(
             input_ids=input_ids,
             position_ids=position_ids,
-            labels=input_ids,
             use_cache=False,
             cu_seq_lens_q=cu_seq_lens,
             cu_seq_lens_k=cu_seq_lens,
             max_length_q=input_ids.shape[1],
             max_length_k=input_ids.shape[1],
-        ).loss
+        ).last_hidden_state[0, :-1]
+        logits = self.model.lm_head(hidden_states).float()
+        log_normalizer = logits.logsumexp(-1, keepdim=True)
+        cross_entropy = (log_normalizer - logits.gather(-1, input_ids[0, 1:, None])).mean()
+        student_top = logits.gather(-1, teacher_ids[:-1].long()) - log_normalizer
+        student_tail = (1 - student_top.exp().sum(-1)).clamp_min(TAIL_EPSILON)
+        target_tail = teacher_tail[:-1]
+        target_top = teacher_log_probs[:-1].float().exp()
+        target_top = target_top * ((1 - target_tail) / target_top.sum(-1))[:, None]
+        kl = (
+            torch.xlogy(target_top, target_top).sum(-1)
+            - (target_top * student_top).sum(-1)
+            + torch.xlogy(target_tail, target_tail)
+            - target_tail * student_tail.log()
+        ).mean()
+        loss = DISTILLATION_ALPHA * cross_entropy + (1 - DISTILLATION_ALPHA) * kl
+        return loss, cross_entropy.detach(), kl.detach()
+
+
+class TeacherCacheDataset(Dataset):
+    def __init__(self, data, cache_dir, block_ids):
+        self.data = data
+        self.cache_dir = cache_dir
+        self.block_ids = block_ids
+        self.arrays = None
+
+    def __len__(self):
+        return len(self.block_ids)
+
+    def __getitem__(self, slot):
+        if self.arrays is None:
+            self.arrays = [np.load(self.cache_dir / f"{name}.npy", mmap_mode="r") for name in TEACHER_ARRAYS]
+        return {
+            "input_ids": self.data[int(self.block_ids[slot])]["input_ids"],
+            **{name: torch.from_numpy(np.array(array[slot])) for name, array in zip(TEACHER_ARRAYS, self.arrays)},
+        }
 
 
 def document_boundaries(input_ids, bos_token_id):
@@ -128,6 +166,8 @@ def main():
     assert socket.gethostname().split(".")[0] == os.environ["SLURMD_NODENAME"].split(".")[0]
     data_dir = Path(os.environ["LAB5_DATA"])
     output_dir = Path(os.environ["LAB5_OUTPUT"])
+    cache_dir = Path(os.environ["LAB5_TEACHER_CACHE"])
+    cache_metadata = json.loads((cache_dir / "cache.json").read_text())
     git_commit = os.environ["LAB5_GIT_COMMIT"]
     run_name = f"{os.environ['SLURM_JOB_NAME']}/{experiment_name}-g{git_commit}-j{os.environ['SLURM_JOB_ID']}"
     allocation_start = float(os.environ["LAB5_ALLOCATION_START"])
@@ -145,6 +185,7 @@ def main():
     torch.backends.cuda.matmul.allow_tf32 = True
 
     manifest = json.loads((data_dir / "manifest.json").read_text())
+    assert cache_metadata["data_manifest"] == manifest
     training_data = load_from_disk(data_dir / "train").with_format("torch")
     tokenizer = AutoTokenizer.from_pretrained(data_dir / "tokenizer", local_files_only=True)
     local_indices = range(rank, FINAL_EVAL_DOCUMENTS, world_size)
@@ -181,12 +222,11 @@ def main():
         start_step = state["step"]
         assert start_step <= DECAY_START
 
-    sampler = DistributedSampler(
-        training_data, num_replicas=world_size, rank=rank, seed=DATA_SEED, drop_last=True
-    )
-    indices = list(sampler)[start_step * ACCUMULATION :]
+    block_ids = np.load(cache_dir / "block_ids.npy")
+    assert len(block_ids) >= TRAIN_STEPS * ACCUMULATION * world_size
+    indices = range(rank, TRAIN_STEPS * ACCUMULATION * world_size, world_size)[start_step * ACCUMULATION :]
     batches = iter(DataLoader(
-        training_data, batch_size=1, sampler=indices, num_workers=2,
+        TeacherCacheDataset(training_data, cache_dir, block_ids), batch_size=1, sampler=indices, num_workers=2,
         pin_memory=True, persistent_workers=True,
     ))
     max_steps = min(
@@ -243,6 +283,14 @@ def main():
             "effective_batch_tokens": tokens_per_step,
             "model_config": raw_model.config.to_dict(),
             "data_manifest": manifest,
+            "distillation": {
+                "teacher_id": cache_metadata["teacher_id"],
+                "teacher_revision": cache_metadata["teacher_revision"],
+                "top_k": cache_metadata["top_k"],
+                "alpha": DISTILLATION_ALPHA,
+                "tail_epsilon": TAIL_EPSILON,
+                "teacher_cache": str(cache_dir),
+            },
         }
         run = wandb.init(
             project="lab5-training-llama",
@@ -259,7 +307,7 @@ def main():
     completed_steps = start_step
     training_seconds = 0.0
     interval_steps = 0
-    interval_loss = torch.zeros((), dtype=torch.float64, device=device)
+    interval_loss = torch.zeros(2, dtype=torch.float64, device=device)
 
     def record(metrics, curve):
         if rank == 0:
@@ -309,12 +357,16 @@ def main():
             group["lr"] = LEARNING_RATE * learning_rate_scale(step)
         optimizer.zero_grad(set_to_none=True)
         for micro_step in range(ACCUMULATION):
-            input_ids = next(batches)["input_ids"].to(device, dtype=torch.long, non_blocking=True)
+            batch = next(batches)
+            input_ids = batch["input_ids"].to(device, dtype=torch.long, non_blocking=True)
+            teacher = [batch[name][0].to(device, non_blocking=True) for name in TEACHER_ARRAYS]
             with nullcontext() if micro_step == ACCUMULATION - 1 else model.no_sync():
                 with torch.autocast("cuda", dtype=torch.bfloat16):
-                    loss = model(input_ids, *document_boundaries(input_ids, tokenizer.bos_token_id))
+                    loss, cross_entropy, kl = model(
+                        input_ids, *document_boundaries(input_ids, tokenizer.bos_token_id), *teacher
+                    )
                 (loss / ACCUMULATION).backward()
-            interval_loss += loss.detach().double() / ACCUMULATION
+            interval_loss += torch.stack([cross_entropy, kl]).double() / ACCUMULATION
         gradient_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0, error_if_nonfinite=True)
         optimizer.step()
         torch.cuda.synchronize(device)
@@ -328,7 +380,8 @@ def main():
             dist.all_reduce(interval_loss)
             if rank == 0:
                 record({
-                    "train/loss": interval_loss.item() / (world_size * interval_steps),
+                    "train/loss": interval_loss[0].item() / (world_size * interval_steps),
+                    "train/distill_loss": interval_loss[1].item() / (world_size * interval_steps),
                     "train/grad_norm": gradient_norm.item(),
                     "train/learning_rate": optimizer.param_groups[0]["lr"],
                     "train/adamw_learning_rate": optimizer.param_groups[1]["lr"],
@@ -359,7 +412,8 @@ def main():
         dist.all_reduce(interval_loss)
         if rank == 0:
             wandb.log({
-                "train/loss": interval_loss.item() / (world_size * interval_steps),
+                "train/loss": interval_loss[0].item() / (world_size * interval_steps),
+                "train/distill_loss": interval_loss[1].item() / (world_size * interval_steps),
                 "train/grad_norm": gradient_norm.item(),
                 "train/learning_rate": optimizer.param_groups[0]["lr"],
                 "train/tokens_per_second": tokens_per_step / step_seconds.item(),
