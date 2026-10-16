@@ -7,7 +7,7 @@
 #SBATCH --gpus-per-node=H200:2
 #SBATCH --cpus-per-task=24
 #SBATCH --mem=256G
-#SBATCH --time=01:45:00
+#SBATCH --time=01:30:00
 #SBATCH --exclude=25a-hgpn027,25a-hgpn071
 #SBATCH --output=logs/lab5-train-%j.out
 #SBATCH --error=logs/lab5-train-%j.err
@@ -15,7 +15,7 @@
 set -euo pipefail
 cd "$SLURM_SUBMIT_DIR"
 export LAB5_ALLOCATION_START="$(date +%s)"
-export LAB5_ALLOCATION_SECONDS="${LAB5_ALLOCATION_SECONDS:-6300}"
+export LAB5_ALLOCATION_SECONDS="${LAB5_ALLOCATION_SECONDS:-5400}"
 export LAB5_GIT_COMMIT="$(git rev-parse --short=8 HEAD)"
 module purge
 module load cuda/13.0
@@ -31,6 +31,7 @@ export TORCHINDUCTOR_COMPILE_THREADS=2
 export NCCL_SOCKET_IFNAME="=lo"
 unset WANDB_SERVICE
 [[ -f "$LAB5_DATA/manifest.json" ]]
+[[ -f "$LAB5_TEACHER_CACHE/cache.json" ]]
 export LAB5_OUTPUT="${LAB5_OUTPUT:-/work/u9216411/acd115198/lab5-runs/$SLURM_JOB_NAME-j$SLURM_JOB_ID}"
 mkdir -p "$LAB5_OUTPUT/source"
 cp src/labs/lab5/{train_lab5.py,muon_lab5.py,train_lab5.sbatch} "$LAB5_OUTPUT/source/"
