@@ -22,7 +22,7 @@ TOP_K = 128
 VOCAB_SIZE = 128256
 SEQUENCE_LENGTH = 8192
 STUDENT_STEPS = 45776
-STUDENT_WORLD_SIZE = 2
+STUDENT_WORLD_SIZE = 8
 LOGIT_CHUNK = 256
 BYTES_PER_POSITION = TOP_K * 4 + TOP_K * 2 + 4
 CACHE_ARRAYS = {
@@ -255,7 +255,7 @@ def main():
                 "drop_last": True,
                 "seed": DATA_SEED,
                 "num_replicas": STUDENT_WORLD_SIZE,
-                "slot_order": "slot i is position i of torch.randperm(len(train), seed 42); student rank r micro-batch j reads slot 2j + r",
+                "slot_order": f"slot i is position i of torch.randperm(len(train), seed 42); student rank r micro-batch j reads slot {STUDENT_WORLD_SIZE}j + r",
             },
             "data_seed": DATA_SEED,
             "dataset_length": len(training_data),

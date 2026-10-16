@@ -42,7 +42,7 @@ ALL_ATTENTION_FUNCTIONS.register(
 LEARNING_RATE = 1e-3
 WEIGHT_DECAY = 0.1 * 1e-3 / LEARNING_RATE / 4
 ADAM_BETAS = (0.9, 0.9872585449014338)
-ACCUMULATION = 4
+ACCUMULATION = 1
 WARMUP_STEPS = 800
 DECAY_FRACTION = 0.4
 SEED = 42
@@ -50,8 +50,8 @@ DATA_SEED = 42
 EVAL_DOCUMENTS = 1024
 FINAL_EVAL_DOCUMENTS = 8192
 MAX_DOCUMENTS = 128
-TRAIN_STEPS = int(os.environ.get("LAB5_STEPS", "4000"))
-SAVE_STEPS = {int(step) for step in os.environ.get("LAB5_SAVE_STEPS", "2400").split(",") if step}
+TRAIN_STEPS = int(os.environ.get("LAB5_STEPS", "45776"))
+SAVE_STEPS = {int(step) for step in os.environ.get("LAB5_SAVE_STEPS", "27465").split(",") if step}
 RESUME = os.environ.get("LAB5_RESUME")
 DECAY_START = TRAIN_STEPS * (1 - DECAY_FRACTION)
 DISTILLATION_ALPHA = 0.5
@@ -272,7 +272,7 @@ def main():
             "eval_seconds": eval_seconds,
             "allocation_seconds": allocation_seconds,
             "finalize_reserve_seconds": 300,
-            "max_h200_hours": 31,
+            "max_h200_hours": 60,
             "attention_implementation": "flash_attention_2",
             "gradient_checkpointing": False,
             "torch_compile": True,
