@@ -33,11 +33,16 @@ class Muon(torch.optim.Optimizer):
                 state = self.state[parameter]
                 if not state:
                     state["momentum_buffer"] = torch.zeros_like(parameter)
+                    state["gradient_second_moment"] = torch.zeros_like(parameter)
                 buffer = state["momentum_buffer"]
                 buffer.lerp_(parameter.grad, 1 - group["momentum"])
-                update = orthogonalize(parameter.grad.lerp(buffer, group["momentum"]))
+                second_moment = state["gradient_second_moment"]
+                second_moment.lerp_(parameter.grad.square(), 0.05)
+                direction = parameter.grad.lerp(buffer, group["momentum"])
+                update = orthogonalize(direction / (second_moment.sqrt() + 1e-8))
+                update = update * (0.2 * update.numel() ** 0.5 / update.norm().clamp_min(1e-12))
                 parameter.mul_(1 - group["lr"] * group["weight_decay"])
-                parameter.add_(update, alpha=-group["lr"] * 0.2 * max(parameter.shape) ** 0.5)
+                parameter.add_(update, alpha=-group["lr"])
 
 
 class MuonAdamW(torch.optim.Optimizer):
