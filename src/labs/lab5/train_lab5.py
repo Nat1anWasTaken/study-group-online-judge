@@ -39,21 +39,21 @@ ALL_ATTENTION_FUNCTIONS.register(
 )
 
 LEARNING_RATE = 1e-3
-WEIGHT_DECAY = 0.1
-ADAM_BETAS = (0.9, 0.95)
+WEIGHT_DECAY = 0.1 * 1e-3 / LEARNING_RATE / 4
+ADAM_BETAS = (0.9, 0.9872585449014338)
 ACCUMULATION = 4
-WARMUP_STEPS = 200
+WARMUP_STEPS = 800
 DECAY_FRACTION = 0.4
 SEED = 42
 DATA_SEED = 42
 EVAL_DOCUMENTS = 1024
 FINAL_EVAL_DOCUMENTS = 8192
 MAX_DOCUMENTS = 128
-TRAIN_STEPS = int(os.environ.get("LAB5_STEPS", "3000"))
-SAVE_STEPS = {int(step) for step in os.environ.get("LAB5_SAVE_STEPS", "").split(",") if step}
+TRAIN_STEPS = int(os.environ.get("LAB5_STEPS", "9000"))
+SAVE_STEPS = {int(step) for step in os.environ.get("LAB5_SAVE_STEPS", "5400").split(",") if step}
 RESUME = os.environ.get("LAB5_RESUME")
 DECAY_START = TRAIN_STEPS * (1 - DECAY_FRACTION)
-experiment_name = f"muon-adamw-lr{LEARNING_RATE:g}-wd0.1-muonwd0.2-polarexpress-docmask-trunc8k-wsd40-b262144-s42"
+experiment_name = f"muon-adamw-lr{LEARNING_RATE:g}-wd{WEIGHT_DECAY:g}-muonwd{2 * WEIGHT_DECAY:g}-polarexpress-precond-exactrms0.2-docmask-trunc8k-wsd40-b65536-beta2token-s42"
 
 
 def learning_rate_scale(step):
@@ -211,9 +211,9 @@ def main():
             "max_train_tokens": 6000000000,
             "micro_batch_size": 1,
             "gradient_accumulation_steps": ACCUMULATION,
-            "optimizer_recipe": "muon_hidden_adamw_rest",
+            "optimizer_recipe": "muon_elementwise_gradient_precond_exact_rms_hidden_adamw_rest",
             "learning_rate": LEARNING_RATE,
-            "muon_adjust_lr_fn": "match_rms_adamw",
+            "muon_adjust_lr_fn": "exact_rms_0.2",
             "adamw_betas": ADAM_BETAS,
             "momentum": 0.95,
             "weight_decay": WEIGHT_DECAY,
@@ -225,21 +225,21 @@ def main():
             "schedule_basis": "optimizer_steps",
             "schedule_steps": TRAIN_STEPS,
             "run_steps": max_steps,
-            "tuning_run": False,
+            "tuning_run": True,
             "cosine_min_lr_ratio": 0.0,
             "logging_steps": 10,
             "eval_steps": eval_steps,
             "eval_seconds": eval_seconds,
             "allocation_seconds": allocation_seconds,
             "finalize_reserve_seconds": 300,
-            "max_h200_hours": 64,
+            "max_h200_hours": 8,
             "attention_implementation": "flash_attention_2",
             "gradient_checkpointing": False,
             "torch_compile": True,
             "world_size": world_size,
             "ddp_bucket_cap_mb": 128,
             "wandb_project": "lab5-training-llama",
-            "optimizer_reference": "src/labs/lab4/muon_lab4.py",
+            "optimizer_reference": "src/labs/lab5/muon_lab5.py",
             "effective_batch_tokens": tokens_per_step,
             "model_config": raw_model.config.to_dict(),
             "data_manifest": manifest,
@@ -295,7 +295,6 @@ def main():
 
     if start_step == 0:
         run_evaluation()
-    last_eval_step = completed_steps
     last_eval_time = time.monotonic()
 
     while completed_steps < max_steps:
@@ -346,13 +345,12 @@ def main():
             interval_steps = 0
 
         evaluation_due = torch.tensor(int(
-            step - last_eval_step >= eval_steps
+            step % eval_steps == 0
             or time.monotonic() - last_eval_time >= eval_seconds
         ), device=device)
         dist.broadcast(evaluation_due, src=0)
         if evaluation_due.item() and step < max_steps:
             run_evaluation()
-            last_eval_step = step
             last_eval_time = time.monotonic()
         if step in SAVE_STEPS and step < max_steps:
             save_checkpoint()

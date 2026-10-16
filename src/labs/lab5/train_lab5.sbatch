@@ -4,17 +4,18 @@
 #SBATCH --partition=dev
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --gpus-per-node=H200:8
+#SBATCH --gpus-per-node=H200:2
 #SBATCH --cpus-per-task=24
 #SBATCH --mem=256G
-#SBATCH --time=01:00:00
+#SBATCH --time=01:45:00
+#SBATCH --exclude=25a-hgpn027,25a-hgpn071
 #SBATCH --output=logs/lab5-train-%j.out
 #SBATCH --error=logs/lab5-train-%j.err
 
 set -euo pipefail
 cd "$SLURM_SUBMIT_DIR"
 export LAB5_ALLOCATION_START="$(date +%s)"
-export LAB5_ALLOCATION_SECONDS="${LAB5_ALLOCATION_SECONDS:-3600}"
+export LAB5_ALLOCATION_SECONDS="${LAB5_ALLOCATION_SECONDS:-6300}"
 export LAB5_GIT_COMMIT="$(git rev-parse --short=8 HEAD)"
 module purge
 module load cuda/13.0
@@ -36,5 +37,5 @@ cp src/labs/lab5/{train_lab5.py,muon_lab5.py,train_lab5.sbatch} "$LAB5_OUTPUT/so
 git diff HEAD > "$LAB5_OUTPUT/source/working-tree.patch"
 srun --ntasks=1 --cpus-per-task=24 \
     uv run --env-file "$REPO/.env" --no-sync \
-    python -u -m torch.distributed.run --standalone --nnodes=1 --nproc-per-node=8 \
+    python -u -m torch.distributed.run --standalone --nnodes=1 --nproc-per-node=2 \
     "$LAB5_OUTPUT/source/train_lab5.py"
