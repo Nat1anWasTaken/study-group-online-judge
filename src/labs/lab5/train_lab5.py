@@ -378,6 +378,7 @@ def main():
 
         if step % 10 == 0 or step == max_steps:
             dist.all_reduce(interval_loss)
+            assert interval_loss[1].item() >= -1e-3, "invalid negative KL; check cache"
             if rank == 0:
                 record({
                     "train/loss": interval_loss[0].item() / (world_size * interval_steps),

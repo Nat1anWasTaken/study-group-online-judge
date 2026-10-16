@@ -127,12 +127,24 @@ def main():
     if rank == 0:
         np.save(cache_dir / "block_ids.npy", block_ids)
         for name, (shape, dtype) in shapes.items():
-            np.lib.format.open_memmap(cache_dir / f"{name}.npy", mode="w+", dtype=dtype, shape=tuple(shape)).flush()
+            header = np.lib.format.open_memmap(cache_dir / f"{name}.npy", mode="w+", dtype=dtype, shape=tuple(shape))
+            header.flush()
+            del header
     dist.barrier()
-    arrays = [np.load(cache_dir / f"{name}.npy", mmap_mode="r+") for name in shapes]
+    offsets = {}
+    slot_bytes = {}
+    for name, (shape, dtype) in shapes.items():
+        mapped = np.load(cache_dir / f"{name}.npy", mmap_mode="r")
+        assert mapped.shape == tuple(shape) and mapped.dtype == np.dtype(dtype)
+        offsets[name] = mapped.offset
+        slot_bytes[name] = mapped[0].nbytes
+        del mapped
+    handles = {name: open(cache_dir / f"{name}.npy", "r+b", buffering=0) for name in shapes}
     load_seconds = time.time() - started
 
     slots = range(rank, blocks, world_size)
+    checked = {slots[0], slots[-1]} if len(slots) else set()
+    checks = []
     print(json.dumps({
         "rank": rank,
         "world_size": world_size,
@@ -150,8 +162,14 @@ def main():
         input_ids = training_data[int(block_ids[slot])]["input_ids"].to(device, dtype=torch.long)[None]
         targets = teacher_targets(teacher, input_ids, tokenizer.bos_token_id)
         retained += (1 - targets[2]).sum(dtype=torch.float64)
-        for array, values in zip(arrays, targets):
-            array[slot] = values.cpu().numpy()
+        for name, values in zip(shapes, targets):
+            data = values.cpu().numpy().tobytes()
+            assert len(data) == slot_bytes[name]
+            handles[name].seek(offsets[name] + slot * len(data))
+            written = handles[name].write(data)
+            assert written == len(data)
+            if slot in checked:
+                checks.append({"rank": rank, "slot": slot, "array": name, "bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()})
         torch.cuda.synchronize(device)
         block_seconds.append(time.monotonic() - block_start)
         if len(block_seconds) % 100 == 0:
@@ -165,12 +183,13 @@ def main():
                 "tokens_per_second": completed_tokens / elapsed,
             }), flush=True)
     flush_start = time.monotonic()
-    for array in arrays:
-        array.flush()
+    for handle in handles.values():
+        handle.flush()
+        os.fsync(handle.fileno())
+        handle.close()
     flush_seconds = time.monotonic() - flush_start
     torch.cuda.synchronize(device)
     processing_seconds = time.monotonic() - processing_start
-    del arrays
 
     tokens = len(slots) * SEQUENCE_LENGTH
     steady_seconds = sum(block_seconds[1:])
@@ -193,9 +212,30 @@ def main():
     dist.barrier()
     ranks = [None] * world_size
     dist.all_gather_object(ranks, local)
+    rank_checks = [None] * world_size
+    dist.all_gather_object(rank_checks, checks)
     dist.all_reduce(retained)
 
     if rank == 0:
+        checks = [record for records in rank_checks for record in records]
+        assert len(checks) == len(shapes) * sum(len({r, r + (blocks - 1 - r) // world_size * world_size}) for r in range(min(world_size, blocks)))
+        for name in shapes:
+            with open(cache_dir / f"{name}.npy", "rb", buffering=0) as handle:
+                for record in checks:
+                    if record["array"] == name:
+                        handle.seek(offsets[name] + record["slot"] * slot_bytes[name])
+                        data = handle.read(slot_bytes[name])
+                        assert len(data) == record["bytes"] == slot_bytes[name], record
+                        assert hashlib.sha256(data).hexdigest() == record["sha256"], record
+        (cache_dir / "cache-checks.json").write_text(json.dumps({
+            "slurm_job_id": os.environ["SLURM_JOB_ID"],
+            "world_size": world_size,
+            "blocks": blocks,
+            "offsets": offsets,
+            "slot_bytes": slot_bytes,
+            "checks": checks,
+        }, indent=2))
+
         wall_seconds = time.time() - started
         total_tokens = blocks * SEQUENCE_LENGTH
         processing = max(row["processing_seconds"] for row in ranks)
@@ -268,6 +308,8 @@ def main():
             "tokenizer_encoding_examples": len(examples),
             "model_config_sha256": hashlib.sha256((data_dir / "model-config" / "config.json").read_bytes()).hexdigest(),
             "arrays": {name: {"shape": shape, "dtype": np.dtype(dtype).name} for name, (shape, dtype) in shapes.items()},
+            "cache_writes": "explicit positioned unbuffered binary writes into .npy data offsets, fsync before completion barrier; no writable memmap",
+            "cache_verification": "sha256 of first and last slot per rank per array, verified by rank 0 readback; records in cache-checks.json",
             "versions": {name: version(name) for name in ("torch", "transformers", "huggingface_hub", "datasets", "numpy")},
             "slurm_job_id": os.environ["SLURM_JOB_ID"],
             "git_commit": os.environ["LAB5_GIT_COMMIT"],
