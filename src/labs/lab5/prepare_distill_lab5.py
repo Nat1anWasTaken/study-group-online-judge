@@ -10,17 +10,18 @@ import numpy as np
 import torch
 import torch.distributed as dist
 from datasets import load_from_disk
-from huggingface_hub import HfApi, snapshot_download
+from huggingface_hub import snapshot_download
 from torch.utils.data import DistributedSampler
 from train_lab5 import ACCUMULATION, DATA_SEED, document_boundaries
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 TEACHER_ID = "meta-llama/Llama-3.1-8B"
+TEACHER_REVISION = "d04e592bb4f6aa9cfee91e2e20afa771667e1d4b"
 TEMPERATURE = 1.0
-TOP_K = 64
+TOP_K = 128
 VOCAB_SIZE = 128256
 SEQUENCE_LENGTH = 8192
-STUDENT_STEPS = 4000
+STUDENT_STEPS = 45776
 STUDENT_WORLD_SIZE = 2
 LOGIT_CHUNK = 256
 BYTES_PER_POSITION = TOP_K * 4 + TOP_K * 2 + 4
@@ -76,11 +77,11 @@ def main():
     started = time.time()
     data_dir = Path(os.environ["LAB5_DATA"])
     cache_dir = Path(os.environ["LAB5_TEACHER_CACHE"])
-    blocks = int(os.environ.get("LAB5_CACHE_BLOCKS", "128"))
     rank = int(os.environ["RANK"])
     world_size = int(os.environ["WORLD_SIZE"])
     local_rank = int(os.environ["LOCAL_RANK"])
     student_blocks = STUDENT_STEPS * ACCUMULATION * STUDENT_WORLD_SIZE
+    blocks = int(os.environ.get("LAB5_CACHE_BLOCKS", student_blocks))
     assert 0 < blocks <= student_blocks
 
     torch.cuda.set_device(local_rank)
@@ -98,16 +99,12 @@ def main():
         assert list(sampler)[: STUDENT_STEPS * ACCUMULATION] == permutation[student_rank:student_blocks:STUDENT_WORLD_SIZE].tolist()
     block_ids = permutation[:blocks].numpy()
 
-    revision = None
     if rank == 0:
         cache_dir.mkdir(parents=True, exist_ok=False)
-        revision = HfApi().model_info(TEACHER_ID).sha
-        snapshot_download(TEACHER_ID, revision=revision, allow_patterns=["*.json", "*.safetensors"])
-    shared = [revision]
-    dist.broadcast_object_list(shared, src=0)
-    revision = shared[0]
+        snapshot_download(TEACHER_ID, revision=TEACHER_REVISION, allow_patterns=["*.json", "*.safetensors"])
+    dist.barrier()
 
-    teacher_tokenizer = AutoTokenizer.from_pretrained(TEACHER_ID, revision=revision)
+    teacher_tokenizer = AutoTokenizer.from_pretrained(TEACHER_ID, revision=TEACHER_REVISION)
     assert len(tokenizer.get_vocab()) == VOCAB_SIZE
     assert teacher_tokenizer.get_vocab() == tokenizer.get_vocab()
     assert teacher_tokenizer.bos_token_id == tokenizer.bos_token_id
@@ -121,7 +118,7 @@ def main():
     assert tokenizer_fingerprint(teacher_tokenizer) == fingerprint
 
     teacher = AutoModelForCausalLM.from_pretrained(
-        TEACHER_ID, revision=revision, dtype=torch.bfloat16,
+        TEACHER_ID, revision=TEACHER_REVISION, dtype=torch.bfloat16,
         attn_implementation="flash_attention_2", device_map={"": device},
     ).eval()
     assert teacher.config.vocab_size == VOCAB_SIZE and teacher.lm_head.weight.dtype == torch.bfloat16
@@ -136,6 +133,14 @@ def main():
     load_seconds = time.time() - started
 
     slots = range(rank, blocks, world_size)
+    print(json.dumps({
+        "rank": rank,
+        "world_size": world_size,
+        "local_rank": local_rank,
+        "node": socket.gethostname(),
+        "gpu": torch.cuda.get_device_name(device),
+        "assigned_blocks": len(slots),
+    }), flush=True)
     block_seconds = []
     retained = torch.zeros((), dtype=torch.float64, device=device)
     torch.cuda.synchronize(device)
@@ -149,6 +154,16 @@ def main():
             array[slot] = values.cpu().numpy()
         torch.cuda.synchronize(device)
         block_seconds.append(time.monotonic() - block_start)
+        if len(block_seconds) % 100 == 0:
+            elapsed = time.monotonic() - processing_start
+            completed_tokens = len(block_seconds) * SEQUENCE_LENGTH
+            print(json.dumps({
+                "rank": rank,
+                "completed_blocks": len(block_seconds),
+                "tokens": completed_tokens,
+                "elapsed_processing_seconds": elapsed,
+                "tokens_per_second": completed_tokens / elapsed,
+            }), flush=True)
     flush_start = time.monotonic()
     for array in arrays:
         array.flush()
@@ -208,13 +223,13 @@ def main():
             "aggregate_tokens_per_second": total_tokens / processing,
             "steady_aggregate_tokens_per_second": steady_rate,
             "retained_top_k_mass_mean": retained.item() / total_tokens,
-            "projections": {"262M": projection(262144000), "6B": projection(6000000000)},
+            "projections": {"3B": projection(3000000000), "6B": projection(6000000000)},
             "ranks": ranks,
         }
         metadata = {
             "complete": True,
             "teacher_id": TEACHER_ID,
-            "teacher_revision": revision,
+            "teacher_revision": TEACHER_REVISION,
             "teacher_dtype": "bfloat16",
             "teacher_attention": "flash_attention_2",
             "teacher_config": teacher.config.to_dict(),
