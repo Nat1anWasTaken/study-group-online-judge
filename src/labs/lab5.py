@@ -1,5 +1,5 @@
-eval_model_id = "Nat1an/cerulean-lab5-distill128-3b-j559819"
-training_run_url = "https://wandb.ai/cerulean-labs/lab5-training-llama/runs/ic4fng0d"
+eval_model_id = "Nat1an/cerulean-lab5-distill128-3b-j561140"
+training_run_url = "https://wandb.ai/cerulean-labs/lab5-training-llama/runs/8r0mxcrj"
 training_config = {
     "random_initialization": True,
     "architecture": "Llama-3.2-1B",
@@ -8,10 +8,37 @@ training_config = {
     "training_steps": 45776,
     "tokens_per_step": 65536,
     "gpu_count": 8,
-    "h200_hours": 33.126666666666665,
-    "wall_hours": 4.140833333333333,
-    "previous_failed_training_h200_hours": 0.5222222222222223,
-    "source_training_commit": "c34146901a7c565e635cb9503c109fbdb1140d7b",
+    "h200_hours": 35.98888888888889,
+    "wall_hours": 4.498611111111111,
+    "h200_hours_note": "conservative Slurm elapsed x 8 GPUs over the 3-job lineage, including the FULL 8000-step W11 parent job although only steps 0..4800 were inherited",
+    "source_training_commit": "e723c21c31ab7f8f8d22cd30a6b0794b576c6da1",
+    "hf_model_revision": "a7db2363d6bfa565d7b0d603ce2fc4fd12862dfc",
+    "training_lineage": [
+        {
+            "run": "lab5-w11-teacher75-j561061",
+            "training_run_url": "https://wandb.ai/cerulean-labs/lab5-training-llama/runs/89ag9730",
+            "source_commit": "8996f1ad40beac10854fa3e84c0d7a0b5be82a96",
+            "inherited_steps": [0, 4800],
+            "inherited_tokens": [0, 314572800],
+            "slurm_elapsed_seconds": 2723,
+        },
+        {
+            "run": "lab5-w12-stable-prefix-j561139",
+            "training_run_url": "https://wandb.ai/cerulean-labs/lab5-training-llama/runs/ola1t5mq",
+            "source_commit": "86f8284efeb57add5a31e216033bb11088d71cc6",
+            "inherited_steps": [4800, 18310],
+            "inherited_tokens": [314572800, 1199964160],
+            "slurm_elapsed_seconds": 4470,
+        },
+        {
+            "run": "lab5-w12-decay-start40-j561140",
+            "training_run_url": "https://wandb.ai/cerulean-labs/lab5-training-llama/runs/8r0mxcrj",
+            "source_commit": "e723c21c31ab7f8f8d22cd30a6b0794b576c6da1",
+            "inherited_steps": [18310, 45776],
+            "inherited_tokens": [1199964160, 2999975936],
+            "slurm_elapsed_seconds": 9002,
+        },
+    ],
     "optimizer_parameter_groups": {
         "hidden_matrices": {
             "optimizer": "Muon with elementwise gradient preconditioning before Polar Express",
@@ -35,8 +62,9 @@ training_config = {
             "betas": [0.9, 0.9872585449014338],
         },
     },
-    "schedule": "warmup_800_steps_stable_linear_decay_0.4",
+    "schedule": "warmup_800_steps_stable_linear_decay_0.6",
     "warmup_steps": 800,
+    "decay_start_step": 18310.4,
     "max_grad_norm": 1.0,
     "seed": 42,
     "distillation": {
@@ -45,8 +73,8 @@ training_config = {
         "top_k": 128,
         "tail_bucket": True,
         "temperature": 1.0,
-        "hard_cross_entropy_weight": 0.5,
-        "forward_kl_weight": 0.5,
+        "hard_cross_entropy_weight": 0.25,
+        "forward_kl_weight": 0.75,
         "offline_teacher_preparation_h200_hours": 30.52888888888889,
         "failed_original_teacher_cache_h200_hours": 30.22222222222222,
     },
@@ -54,7 +82,7 @@ training_config = {
     "holdout_shuffle_seed": 42,
     "split_before_tokenizing_and_packing": True,
     "validation_documents": 8192,
-    "local_validation_perplexity_not_judge": 12.942802447378984,
+    "local_validation_perplexity_not_judge": 12.632224563650183,
     "document_attention_mask": True,
     "training_document_truncation": 8192,
 }
