@@ -45,7 +45,27 @@ def main():
         lineage_path = run_dir / "training-lineage.json"
         lineage = json.loads(lineage_path.read_text()) if lineage_path.exists() else {}
         total_hours = lineage.get("trajectory_h200_hours_estimate", result["h200_hours"])
-        hidden_decay = lineage.get("hidden_weight_decay", config["weight_decay"])
+        recipe = config.get("optimizer_recipe", "")
+        hidden_decay = lineage.get("hidden_weight_decay", (
+            2 * config["weight_decay"]
+            if recipe == "muon_elementwise_gradient_precond_exact_rms_hidden_adamw_rest"
+            else config["weight_decay"]
+        ))
+        hours_label = (
+            "Approximate total H200-hours" if lineage
+            else "Measured runtime H200-hours (not Slurm allocation)"
+        )
+        distillation = config.get("distillation")
+        distillation_note = ""
+        if distillation:
+            distillation_note = (
+                f"Distilled offline from {distillation['teacher_id']} at revision "
+                f"`{distillation['teacher_revision']}` using cached top-{distillation['top_k']} "
+                "teacher log-probabilities plus a tail bucket at temperature 1. The loss is "
+                f"{distillation['alpha']} x hard-label cross-entropy + "
+                f"{1 - distillation['alpha']} x forward KL to the teacher. "
+                "Teacher-cache preparation compute is not included in the H200-hours above."
+            )
         lineage_note = ""
         if lineage:
             lineage_note = (
@@ -80,6 +100,7 @@ matrices and AdamW for the tied embedding/output table and normalization paramet
 | Setting | Value |
 | --- | --- |
 | Source run | {run_dir.name} |
+| Optimizer recipe | {recipe} |
 | Context length | {config['sequence_length']} |
 | Tokens per update | {batch_tokens} |
 | Peak learning rate (Muon and AdamW) | {config['learning_rate']} |
@@ -93,13 +114,17 @@ matrices and AdamW for the tied embedding/output table and normalization paramet
 | Warmup fraction | {config['warmup_ratio']} |
 | Schedule basis | {config['schedule_basis']} |
 | Training tokens processed | {result['total_tokens_seen']} |
-| Approximate total H200-hours | {total_hours:.4f} |
+| GPUs | {config['world_size']} |
+| Measured wall hours | {result['wall_hours']:.4f} |
+| {hours_label} | {total_hours:.4f} |
 | Heldout perplexity | {final_eval['perplexity']:.4f} |
 | Evaluated documents | {final_eval['documents']} |
 
 [W&B run]({result['wandb_url']})
 
 {lineage_note}
+
+{distillation_note}
 
 Documents were shuffled with seed {config['seed']} before tokenization, and the
 last {config['holdout_documents']} documents were excluded from training.
@@ -108,17 +133,26 @@ set, with individual documents truncated to {config['sequence_length']} tokens.
 Evaluation ran inside training. This is not an OJ score on all heldout documents.
 
 The full recipe is in `training-config.json`, the final result is in `result.json`,
-with final holdout scores in `eval-8k.json` when available.
+with final holdout scores in `eval-8k.json` when available. Training code is in
+`training-source/` and teacher-cache checks are in `verification.json` when available.
 """
         operations = [
             CommitOperationAdd(path_in_repo=file.name, path_or_fileobj=file)
             for file in sorted(model_dir.iterdir()) if file.is_file()
         ]
-        for filename in ("training-config.json", "result.json", "eval-8k.json", "training-lineage.json"):
+        for filename in ("training-config.json", "result.json", "eval-8k.json",
+                         "training-lineage.json", "verification.json"):
             if not (run_dir / filename).exists():
                 continue
             operations.append(CommitOperationAdd(
                 path_in_repo=filename, path_or_fileobj=run_dir / filename,
+            ))
+        for filename in ("train_lab5.py", "muon_lab5.py"):
+            if not (run_dir / "source" / filename).is_file():
+                continue
+            operations.append(CommitOperationAdd(
+                path_in_repo=f"training-source/{filename}",
+                path_or_fileobj=run_dir / "source" / filename,
             ))
         operations.append(CommitOperationAdd(
             path_in_repo="README.md", path_or_fileobj=model_card.encode(),
