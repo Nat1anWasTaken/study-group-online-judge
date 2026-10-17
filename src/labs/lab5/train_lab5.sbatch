@@ -8,7 +8,7 @@
 #SBATCH --cpus-per-task=96
 #SBATCH --mem=512G
 #SBATCH --time=07:30:00
-#SBATCH --exclude=25a-hgpn027,25a-hgpn071
+#SBATCH --exclude=25a-hgpn027,25a-hgpn062,25a-hgpn071
 #SBATCH --output=logs/lab5-train-%j.out
 #SBATCH --error=logs/lab5-train-%j.err
 
@@ -37,6 +37,6 @@ mkdir -p "$LAB5_OUTPUT/source"
 cp src/labs/lab5/{train_lab5.py,muon_lab5.py,train_lab5.sbatch} "$LAB5_OUTPUT/source/"
 git diff HEAD > "$LAB5_OUTPUT/source/working-tree.patch"
 srun --ntasks=1 --cpus-per-task=96 \
-    uv run --env-file "$REPO/.env" --no-sync \
+    uv run --project "$REPO" --env-file "$REPO/.env" --no-sync \
     python -u -m torch.distributed.run --standalone --nnodes=1 --nproc-per-node=8 \
     "$LAB5_OUTPUT/source/train_lab5.py"
