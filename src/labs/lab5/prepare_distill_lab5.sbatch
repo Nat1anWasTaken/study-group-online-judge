@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-#SBATCH --job-name=lab5-w15-teacher3b-524m
+#SBATCH --job-name=lab5-w15-teacher3b-3b-cache
 #SBATCH --account=ACD115198
 #SBATCH --partition=dev
 #SBATCH --nodes=2
@@ -8,7 +8,7 @@
 #SBATCH --gpus-per-node=H200:8
 #SBATCH --cpus-per-task=96
 #SBATCH --mem=384G
-#SBATCH --time=01:00:00
+#SBATCH --time=03:00:00
 #SBATCH --exclude=25a-hgpn027,25a-hgpn062,25a-hgpn071,25a-hgpn001,25a-hgpn173,25a-hgpn083
 #SBATCH --output=/work/u9216411/acd115198/lab5-runs/tools/wave15-%j.out
 #SBATCH --error=/work/u9216411/acd115198/lab5-runs/tools/wave15-%j.err
@@ -28,8 +28,8 @@ export MKL_NUM_THREADS=1
 unset NCCL_SOCKET_IFNAME
 unset WANDB_SERVICE
 [[ -f "$LAB5_DATA/manifest.json" ]]
-export LAB5_CACHE_BLOCKS=64000
-export LAB5_OUTPUT=/work/u9216411/acd115198/lab5-runs/lab5-w15-teacher3b-524m
+export LAB5_CACHE_BLOCKS=366208
+export LAB5_OUTPUT=/work/u9216411/acd115198/lab5-runs/lab5-w15-teacher3b-3b-cache
 export LAB5_TEACHER_CACHE="${LAB5_TEACHER_CACHE:-$LAB5_OUTPUT/cache}"
 export MASTER_ADDR="$(scontrol show hostnames "$SLURM_JOB_NODELIST" | head -n 1)"
 export MASTER_PORT=$((15000 + SLURM_JOB_ID % 40000))
