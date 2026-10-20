@@ -55,7 +55,7 @@ SAVE_STEPS = {int(step) for step in os.environ.get("LAB5_SAVE_STEPS", "18310").s
 RESUME = os.environ.get("LAB5_RESUME")
 DECAY_START = TRAIN_STEPS * (1 - DECAY_FRACTION)
 DISTILLATION_ALPHA = 0.25
-experiment_name = f"muon-adamw-lr{LEARNING_RATE:g}-wd{WEIGHT_DECAY:g}-muonwd{2 * WEIGHT_DECAY:g}-polarexpress-precond-exactrms0.2-docmask-trunc8k-wsd60-b65536-beta2token-distill8b-a{DISTILLATION_ALPHA:g}-s42"
+experiment_name = f"muon-adamw-lr{LEARNING_RATE:g}-wd{WEIGHT_DECAY:g}-muonwd{2 * WEIGHT_DECAY:g}-polarexpress-precond-exactrms0.2-docmask-trunc8k-wsd60-b65536-beta2token-distill3b-a{DISTILLATION_ALPHA:g}-s42"
 TAIL_EPSILON = 1e-7
 TEACHER_ARRAYS = ("teacher_ids", "teacher_log_probs", "teacher_tail")
 
@@ -272,7 +272,7 @@ def main():
             "eval_seconds": eval_seconds,
             "allocation_seconds": allocation_seconds,
             "finalize_reserve_seconds": 300,
-            "max_h200_hours": 60,
+            "max_h200_hours": 44,
             "attention_implementation": "flash_attention_2",
             "gradient_checkpointing": False,
             "torch_compile": True,

@@ -15,8 +15,8 @@ from torch.utils.data import DistributedSampler
 from train_lab5 import ACCUMULATION, DATA_SEED, document_boundaries
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-TEACHER_ID = "meta-llama/Llama-3.1-8B"
-TEACHER_REVISION = "d04e592bb4f6aa9cfee91e2e20afa771667e1d4b"
+TEACHER_ID = "meta-llama/Llama-3.2-3B"
+TEACHER_REVISION = "13afe5124825b4f3751f836b40dafda64c1ed062"
 TEMPERATURE = 1.0
 TOP_K = 128
 VOCAB_SIZE = 128256

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-#SBATCH --job-name=lab5-train
+#SBATCH --job-name=lab5-w15-teacher3b-3b
 #SBATCH --account=ACD115198
 #SBATCH --partition=8gpus
 #SBATCH --nodes=1
@@ -7,20 +7,26 @@
 #SBATCH --gpus-per-node=H200:8
 #SBATCH --cpus-per-task=96
 #SBATCH --mem=512G
-#SBATCH --time=07:30:00
-#SBATCH --exclude=25a-hgpn027,25a-hgpn062,25a-hgpn071
-#SBATCH --output=logs/lab5-train-%j.out
-#SBATCH --error=logs/lab5-train-%j.err
+#SBATCH --time=05:30:00
+#SBATCH --exclude=25a-hgpn027,25a-hgpn062,25a-hgpn071,25a-hgpn001,25a-hgpn173,25a-hgpn083
+#SBATCH --output=/work/u9216411/acd115198/lab5-runs/tools/wave15-%j.out
+#SBATCH --error=/work/u9216411/acd115198/lab5-runs/tools/wave15-%j.err
 
 set -euo pipefail
 cd "$SLURM_SUBMIT_DIR"
+[[ "$SLURM_SUBMIT_DIR" == /work/u9216411/acd115198/lab5-worktrees/w15-teacher3b-3b ]]
+[[ "$SLURM_GPUS_ON_NODE" == 8 ]]
 export LAB5_ALLOCATION_START="$(date +%s)"
-export LAB5_ALLOCATION_SECONDS="${LAB5_ALLOCATION_SECONDS:-27000}"
+export LAB5_ALLOCATION_SECONDS=19800
 export LAB5_GIT_COMMIT="$(git rev-parse --short=8 HEAD)"
 module purge
 module load cuda/13.0
 REPO=/work/u9216411/acd115198/study-group-online-judge
 export LAB5_DATA="${LAB5_DATA:-/work/u9216411/acd115198/lab5-data/dolma-seed42-8192-trunc8k}"
+export LAB5_TEACHER_CACHE=/work/u9216411/acd115198/lab5-runs/lab5-w15-teacher3b-3b-cache/cache
+export LAB5_STEPS=45776
+export LAB5_SAVE_STEPS=18310
+unset LAB5_RESUME
 export UV_PROJECT_ENVIRONMENT="$REPO/work/lab4-fa2-env"
 export WANDB_PROJECT=lab5-training-llama
 export WANDB_MODE=online
