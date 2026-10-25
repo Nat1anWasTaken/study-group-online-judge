@@ -4,11 +4,13 @@ from unittest.mock import patch
 
 from datasets import Dataset
 
+from judge.evaluators import PerplexityEvaluator
 from judge.models import JudgeResult
 from judge.tasks.lab4 import Lab4
 
 
 def test_lab4_keeps_c4_validation_selection():
+    assert isinstance(Lab4.evaluator, PerplexityEvaluator)
     assert Lab4.evaluator.tokenizer_id == "openai-community/gpt2"
     dataset = Dataset.from_dict({"text": [str(i) for i in range(7)]})
     with (

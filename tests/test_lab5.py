@@ -7,7 +7,7 @@ import pytest
 from datasets import Dataset
 
 from judge.evaluators import PerplexityEvaluator
-from judge.models import JudgeResult
+from judge.models import JudgeResult, MetricDirection
 from judge.tasks import TASKS
 from judge.tasks.lab4 import Lab4
 from judge.tasks.lab5 import Lab5
@@ -40,7 +40,7 @@ def test_lab5_is_registered_and_requires_gpu():
     assert isinstance(task, Lab5)
     assert task.resources.gpus == 1
     assert task.primary_metric == "score"
-    assert task.metric_direction.value == "minimize"
+    assert task.metric_direction == MetricDirection.MINIMIZE
     assert isinstance(task.evaluator, PerplexityEvaluator)
     assert task.evaluator.tokenizer_id == "meta-llama/Llama-3.2-1B"
     assert task.evaluator.max_seq_length == 8192

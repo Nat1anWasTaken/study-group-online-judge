@@ -1,12 +1,11 @@
 import json
 import struct
 from datetime import UTC, datetime
-from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-from judge.leaderboard import LeaderboardService, rank_submissions, wandb_submissions
+from judge.leaderboard import LeaderboardService, rank_submissions
 from judge.models import GradingType, MetricDirection
 from judge.tasks.base import Task
 
@@ -102,35 +101,12 @@ def test_maximize_custom_metric():
         assert board(items, "max")["entries"][0]["github_actor"] == "bob"
 
 
-def test_wandb_adapter(monkeypatch):
-    monkeypatch.setenv("WANDB_ENTITY", "group")
-    monkeypatch.setenv("WANDB_PROJECT", "judge")
-    run = SimpleNamespace(
-        id="run",
-        config={
-            "task_id": "lab4",
-            "github_actor": "alice",
-            "submitted_at": "2026-09-01T00:00:00Z",
-        },
-        summary={"score": 2},
-        created_at="2026-09-02T00:00:00Z",
-        url="https://wandb.ai/run",
-    )
-    with patch("wandb.Api") as api:
-        api.return_value.runs.return_value = [run]
-        items = wandb_submissions()
-        assert items[0]["submitted_at"].startswith("2026-09-01")
-        api.return_value.runs.assert_called_once_with(
-            "group/judge", filters={"summary_metrics.judge_status": "completed"}
-        )
-
-
 def test_notifications_retry_and_restart(tmp_path, monkeypatch):
     monkeypatch.setenv("JUDGE_SLACK_WEBHOOK_URL", "https://hooks.slack.com/example")
     service = LeaderboardService(tmp_path / "judge.db")
     with (
         patch(
-            "judge.leaderboard.wandb_submissions", return_value=[submission()]
+            "judge.leaderboard.flock_submissions", return_value=[submission()]
         ) as source,
         patch("judge.leaderboard.post_slack") as slack,
     ):
@@ -159,17 +135,18 @@ def test_notifications_retry_and_restart(tmp_path, monkeypatch):
 def test_public_endpoint_keeps_submission_auth(tmp_path, monkeypatch):
     from fastapi.testclient import TestClient
 
-    from judge.main import app
+    from judge.main import create_app
 
+    monkeypatch.setenv("JUDGE_ALLOW_CODE_SUBMISSIONS", "true")
     monkeypatch.setenv("JUDGE_API_TOKEN", "private-token")
     monkeypatch.setenv("JUDGE_DATABASE_PATH", str(tmp_path / "judge.db"))
     with (
-        patch("judge.leaderboard.wandb_submissions", return_value=[]),
-        TestClient(app) as client,
+        patch("judge.leaderboard.flock_submissions", return_value=[]),
+        TestClient(create_app()) as client,
     ):
         response = client.get("/api/leaderboard")
         assert response.status_code == 200
-        assert response.json()["source"] == "wandb"
+        assert response.json()["source"] == "flock"
         assert "private-token" not in response.text
         assert client.get("/jobs/missing").status_code == 401
         assert client.get("/healthz").status_code == 200
@@ -233,7 +210,7 @@ def test_only_all_time_records_notify(tmp_path, monkeypatch):
     service = LeaderboardService(tmp_path / "judge.db")
     with (
         patch(
-            "judge.leaderboard.wandb_submissions", return_value=[submission(score=4)]
+            "judge.leaderboard.flock_submissions", return_value=[submission(score=4)]
         ) as source,
         patch("judge.leaderboard.post_slack") as send,
     ):
@@ -278,7 +255,7 @@ def test_refresh_logs_failure_details_without_credentials(
     monkeypatch.setenv("WANDB_API_KEY", "test-secret-key")
     service = LeaderboardService(tmp_path / "judge.db")
     with patch(
-        "judge.leaderboard.wandb_submissions",
+        "judge.leaderboard.flock_submissions",
         side_effect=RuntimeError("permission denied for test-secret-key"),
     ):
         service.refresh()
@@ -294,10 +271,10 @@ def test_refresh_logs_success_and_ranking_failure(tmp_path, caplog):
 
     caplog.set_level(logging.INFO, logger="uvicorn.error.judge.leaderboard")
     service = LeaderboardService(tmp_path / "judge.db")
-    with patch("judge.leaderboard.wandb_submissions", return_value=[submission()]):
+    with patch("judge.leaderboard.flock_submissions", return_value=[submission()]):
         service.refresh()
-        assert "W&B refresh started" in caplog.text
-        assert "W&B refresh succeeded" in caplog.text
+        assert "Flock refresh started" in caplog.text
+        assert "Flock refresh succeeded" in caplog.text
         assert "submissions=1" in caplog.text
         with patch(
             "judge.leaderboard.rank_submissions",
@@ -353,7 +330,7 @@ def test_daily_schedule_retry_and_restart(tmp_path, monkeypatch, clock):
     monkeypatch.setenv("JUDGE_SLACK_WEBHOOK_URL", "https://hooks.slack.com/example")
     service = LeaderboardService(tmp_path / "judge.db")
     with (
-        patch("judge.leaderboard.wandb_submissions", return_value=[submission()]),
+        patch("judge.leaderboard.flock_submissions", return_value=[submission()]),
         patch("judge.leaderboard.post_slack") as send,
     ):
         service.refresh()  # 18:59 Taipei: baseline, no messages.
@@ -392,7 +369,7 @@ def test_daily_custom_timezone_and_time(tmp_path, monkeypatch, clock):
     clock[0] = datetime(2026, 10, 5, 12, 59, tzinfo=UTC)
     service = LeaderboardService(tmp_path / "judge.db")
     with (
-        patch("judge.leaderboard.wandb_submissions", return_value=[]),
+        patch("judge.leaderboard.flock_submissions", return_value=[]),
         patch("judge.leaderboard.post_slack") as send,
     ):
         service.refresh()  # 08:59 New York.
@@ -408,7 +385,7 @@ def test_record_delivery_independent_of_daily_failure(tmp_path, monkeypatch, clo
     service = LeaderboardService(tmp_path / "judge.db")
     with (
         patch(
-            "judge.leaderboard.wandb_submissions", return_value=[submission()]
+            "judge.leaderboard.flock_submissions", return_value=[submission()]
         ) as source,
         patch("judge.leaderboard.post_slack") as send,
     ):
@@ -434,7 +411,7 @@ def test_no_daily_summary_from_failed_source(tmp_path, monkeypatch, clock):
     service = LeaderboardService(tmp_path / "judge.db")
     with (
         patch(
-            "judge.leaderboard.wandb_submissions", side_effect=RuntimeError("offline")
+            "judge.leaderboard.flock_submissions", side_effect=RuntimeError("offline")
         ),
         patch("judge.leaderboard.post_slack") as send,
     ):
@@ -487,15 +464,12 @@ def test_standings_png_remains_immutable(tmp_path, monkeypatch):
     def capture_website(self, **kwargs):
         page = self.page
         assert page.locator(".board h2").inner_text() == "Training GPT-2 from Scratch"
-        assert "Georgia" in page.locator(".board h2").evaluate(
+        assert "Host Grotesk" in page.locator(".board h2").evaluate(
             "element => getComputedStyle(element).fontFamily"
         )
         assert page.locator(".search input").is_visible()
         assert page.locator(".avatar img").evaluate("image => image.naturalWidth") == 36
-        assert (
-            "Results from Weights & Biases"
-            in page.locator(".board-footer").inner_text()
-        )
+        assert page.locator(".board-footer").count() == 0
         return screenshot(self, **kwargs)
 
     monkeypatch.setattr(Locator, "screenshot", capture_website)
@@ -526,7 +500,7 @@ def test_partial_daily_resumes_saved_page_after_restart(tmp_path, monkeypatch, c
     ]
     service = LeaderboardService(tmp_path / "judge.db")
     with (
-        patch("judge.leaderboard.wandb_submissions", return_value=items) as source,
+        patch("judge.leaderboard.flock_submissions", return_value=items) as source,
         patch("judge.leaderboard.urlopen") as send,
     ):
         service.refresh()
@@ -705,7 +679,7 @@ def test_daily_bot_upload_does_not_need_a_webhook(tmp_path, monkeypatch, clock):
     monkeypatch.setenv("JUDGE_SLACK_CHANNEL_ID", "C123")
     service = LeaderboardService(tmp_path / "judge.db")
     with (
-        patch("judge.leaderboard.wandb_submissions", return_value=[submission()]),
+        patch("judge.leaderboard.flock_submissions", return_value=[submission()]),
         patch("judge.leaderboard.upload_slack_card") as share,
     ):
         service.refresh()
@@ -742,7 +716,7 @@ def test_bot_token_is_redacted_from_notification_logs(
     service = LeaderboardService(tmp_path / "judge.db")
     clock[0] = datetime(2026, 10, 5, 11, tzinfo=UTC)
     with (
-        patch("judge.leaderboard.wandb_submissions", return_value=[submission()]),
+        patch("judge.leaderboard.flock_submissions", return_value=[submission()]),
         patch(
             "judge.leaderboard.upload_slack_card",
             side_effect=RuntimeError("denied for test-bot-secret"),

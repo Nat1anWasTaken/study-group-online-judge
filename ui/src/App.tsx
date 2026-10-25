@@ -11,6 +11,7 @@ import {
 import "./styles.css";
 import ceruleanLogo from "./assets/cerulean.png";
 import labNames from "./lab-names.json";
+import greetings from "./greetings.json";
 
 type Entry = {
     rank: number;
@@ -20,6 +21,8 @@ type Entry = {
     run_url: string | null;
     submission_id: string;
     attempts: number;
+    participant_id?: string;
+    val_loss?: number;
 };
 type Lab = {
     id: string;
@@ -29,6 +32,7 @@ type Lab = {
     entries: Entry[];
     submissions: number;
     participants: number;
+    project_url?: string | null;
 };
 type Snapshot = {
     source: string;
@@ -52,11 +56,11 @@ function runLink(url: string | null) {
     }
 }
 
-function GitHubAvatar({ username }: { username: string }) {
+function ParticipantAvatar({ username, flock }: { username: string; flock: boolean }) {
     const [failed, setFailed] = useState(false);
     return (
         <span className="avatar" aria-hidden="true">
-            {failed ? (
+            {failed || flock ? (
                 username.slice(0, 2).toUpperCase()
             ) : (
                 <img
@@ -75,6 +79,9 @@ function GitHubAvatar({ username }: { username: string }) {
 }
 
 export default function App() {
+    const [greeting] = useState(
+        () => greetings[Math.floor(Math.random() * greetings.length)],
+    );
     const [data, setData] = useState<Snapshot | null>(null);
     const [selected, setSelected] = useState("");
     const [query, setQuery] = useState("");
@@ -93,11 +100,15 @@ export default function App() {
                         "Leaderboard unavailable. Please try again.",
                     );
                 const snapshot: Snapshot = await response.json();
+                snapshot.labs.sort((a, b) => {
+                    if (a.id === "midterm") return -1;
+                    if (b.id === "midterm") return 1;
+                    return b.id.localeCompare(a.id, undefined, { numeric: true });
+                });
                 setData(snapshot);
                 setSelected(
-                    (previous) => previous || [...snapshot.labs].sort(
-                        (a, b) => b.id.localeCompare(a.id, undefined, { numeric: true }),
-                    )[0]?.id || "",
+                    (previous) => snapshot.labs.some((item) => item.id === previous)
+                        ? previous : snapshot.labs[0]?.id || "",
                 );
                 setError("");
             } catch (e) {
@@ -119,6 +130,7 @@ export default function App() {
         };
     }, []);
     const lab = data?.labs.find((item) => item.id === selected);
+    const midterm = lab?.id === "midterm";
     const scored = lab?.grading_type === "score";
     const entries =
         lab?.entries.filter((entry) =>
@@ -133,24 +145,24 @@ export default function App() {
                     </span>{" "}
                     Cerulean Labs
                 </a>
-                <a
-                    className="nav-link"
-                    href="https://wandb.ai/cerulean-labs/study-group-labs"
-                    target="_blank"
-                    rel="noreferrer"
-                >
-                    View experiments <External size={16} />
-                </a>
+                {runLink(lab?.project_url ?? null) && (
+                    <a
+                        className="nav-link"
+                        href={runLink(lab?.project_url ?? null)!}
+                        target="_blank"
+                        rel="noreferrer"
+                    >
+                        View experiments <External size={16} />
+                    </a>
+                )}
             </header>
             <main>
                 <section className="hero">
-                    <h1>
-                        Small experiments. <em>Better, together.</em>
-                    </h1>
+                    <h1>{greeting}</h1>
                 </section>
                 <div className="workspace">
                     <div className="lab-toolbar" id="standings">
-                        <aside aria-label="Choose a lab">
+                        <aside aria-label="Choose a leaderboard">
                             {data?.labs.map((item) => (
                                 <button
                                     key={item.id}
@@ -162,12 +174,10 @@ export default function App() {
                                     }}
                                 >
                                     <span className="lab-number">
-                                        {item.id
-                                            .replace("lab", "")
-                                            .padStart(2, "0")}
+                                        {item.id === "midterm" ? "MT" : item.id.replace("lab", "").padStart(2, "0")}
                                     </span>
                                     <strong>
-                                        {item.id.replace("lab", "Lab ")}
+                                        {item.id === "midterm" ? "Midterm" : item.id.replace("lab", "Lab ")}
                                     </strong>
                                     <small>
                                         {names[item.id] ??
@@ -176,46 +186,52 @@ export default function App() {
                                 </button>
                             ))}
                         </aside>
-                        <span className="sync">
-                            <RefreshCw
-                                size={13}
-                                className={loading ? "spinning" : ""}
-                            />
-                            {data?.updated_at
-                                ? `Updated ${date(data.updated_at)}`
-                                : "Waiting for first sync"}
-                        </span>
                     </div>
                     <section className="board" aria-label="Leaderboard">
                         <div className="board-header">
                             <div>
                                 <div className="eyebrow accent">
-                                    {lab?.id.replace("lab", "LAB ") ??
-                                        "STANDINGS"}
+                                    {midterm ? "MIDTERM · TRACK 3" : lab?.id.replace("lab", "LAB ") ?? "STANDINGS"}
                                 </div>
                                 <h2>
                                     {lab
                                         ? (names[lab.id] ?? lab.id)
                                         : "Loading experiments"}
                                 </h2>
-                                <p>
-                                    {scored
-                                        ? `${lab?.metric_direction === "maximize" ? "Highest" : "Lowest"} ${lab?.primary_metric} per participant. Keep improving.`
-                                        : "Correctness first. Ranked by earliest passing submission."}
-                                </p>
+                                {(midterm || !scored) && (
+                                    <p>
+                                        {midterm
+                                            ? "Fewest training steps with final validation loss < 3.28. Best qualifying run per participant."
+                                            : "Correctness first. Ranked by earliest passing submission."}
+                                    </p>
+                                )}
                             </div>
-                            <span className="mode">
-                                {scored ? (
-                                    lab?.metric_direction === "maximize" ? (
-                                        <ArrowUpRight size={14} />
+                            <div className="board-status">
+                                <span className="mode">
+                                    {scored ? (
+                                        lab?.metric_direction === "maximize" ? (
+                                            <ArrowUpRight size={14} />
+                                        ) : (
+                                            <ArrowDownRight size={14} />
+                                        )
                                     ) : (
-                                        <ArrowDownRight size={14} />
-                                    )
-                                ) : (
-                                    <Check size={14} />
-                                )}{" "}
-                                {scored ? "Score challenge" : "Pass / fail"}
-                            </span>
+                                        <Check size={14} />
+                                    )}{" "}
+                                    {midterm ? "Optimization speedrun" : scored ? "Score challenge" : "Pass / fail"}
+                                </span>
+                                <span
+                                    className="sync"
+                                    title={data?.updated_at ? date(data.updated_at) : undefined}
+                                >
+                                    <RefreshCw
+                                        size={13}
+                                        className={loading ? "spinning" : ""}
+                                    />
+                                    {data?.updated_at
+                                        ? `Updated from Flock at ${new Date(data.updated_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`
+                                        : "Waiting for Flock"}
+                                </span>
+                            </div>
                         </div>
                         {(error || data?.error) && (
                             <div className="error" role="alert">
@@ -246,11 +262,12 @@ export default function App() {
                                         <th>Rank</th>
                                         <th>Participant</th>
                                         <th>
-                                            {scored
+                                            {midterm ? "Training steps ↓" : scored
                                                 ? `${lab?.primary_metric} ${lab?.metric_direction === "maximize" ? "↑" : "↓"}`
                                                 : "Result"}
                                         </th>
-                                        <th>Submitted</th>
+                                        {midterm && <th>Validation loss</th>}
+                                        <th>{midterm ? "Run started" : "Submitted"}</th>
                                         <th>
                                             <span className="sr-only">Run</span>
                                         </th>
@@ -258,7 +275,7 @@ export default function App() {
                                 </thead>
                                 <tbody>
                                     {entries.map((entry) => (
-                                        <tr key={entry.github_actor}>
+                                        <tr key={entry.participant_id ?? entry.github_actor}>
                                             <td>
                                                 <span
                                                     className={
@@ -274,8 +291,9 @@ export default function App() {
                                             </td>
                                             <td>
                                                 <div className="participant">
-                                                    <GitHubAvatar
+                                                    <ParticipantAvatar
                                                         key={entry.github_actor}
+                                                        flock={entry.participant_id?.startsWith("flock:") ?? false}
                                                         username={
                                                             entry.github_actor
                                                         }
@@ -286,10 +304,9 @@ export default function App() {
                                                         </strong>
                                                         <small>
                                                             {entry.attempts}{" "}
-                                                            {entry.attempts ===
-                                                            1
-                                                                ? "submission"
-                                                                : "submissions"}
+                                                            {midterm
+                                                                ? entry.attempts === 1 ? "run" : "runs"
+                                                                : entry.attempts === 1 ? "submission" : "submissions"}
                                                         </small>
                                                     </div>
                                                 </div>
@@ -311,6 +328,7 @@ export default function App() {
                                                     </span>
                                                 )}
                                             </td>
+                                            {midterm && <td className="score">{entry.val_loss?.toLocaleString(undefined, { maximumFractionDigits: 5 })}</td>}
                                             <td className="submitted">
                                                 {date(entry.submitted_at)}
                                             </td>
@@ -323,7 +341,7 @@ export default function App() {
                                                         )!}
                                                         target="_blank"
                                                         rel="noreferrer"
-                                                        aria-label={`View ${entry.github_actor}'s W&B run`}
+                                                        aria-label={`View ${entry.github_actor}'s Flock run`}
                                                     >
                                                         <External size={16} />
                                                     </a>
@@ -346,17 +364,11 @@ export default function App() {
                                 </h3>
                                 <p>
                                     {query
-                                        ? "Try another GitHub username."
-                                        : "Completed, qualifying W&B submissions will appear here."}
+                                        ? "Try another participant name."
+                                        : "Completed, qualifying Flock runs will appear here."}
                                 </p>
                             </div>
                         )}
-                        <div className="board-footer">
-                            <span>
-                                <span className="small-dot" /> Results from
-                                Weights & Biases
-                            </span>
-                        </div>
                     </section>
                 </div>
                 <footer>

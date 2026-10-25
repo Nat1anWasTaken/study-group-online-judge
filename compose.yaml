@@ -10,19 +10,35 @@ x-judge: &judge
   restart: unless-stopped
 
 services:
+  leaderboard:
+    image: study-group-online-judge-ui:local
+    pull_policy: build
+    build:
+      context: ./ui
+    restart: unless-stopped
+    environment:
+      JUDGE_API_URL: ${JUDGE_API_URL:-http://api:8000}
+
   api:
     <<: *judge
     environment:
-      JUDGE_API_TOKEN: ${JUDGE_API_TOKEN:?JUDGE_API_TOKEN must be set}
-      JUDGE_SSH_HOST: ${JUDGE_SSH_HOST:?Set the remote judge Tailscale hostname}
-      JUDGE_SSH_USER: ${JUDGE_SSH_USER:?Set the remote Unix user}
-      JUDGE_REMOTE_WORK_ROOT: ${JUDGE_REMOTE_WORK_ROOT:?Set the remote shared work directory}
+      JUDGE_ALLOW_CODE_SUBMISSIONS: ${JUDGE_ALLOW_CODE_SUBMISSIONS:-false}
+      JUDGE_API_TOKEN: ${JUDGE_API_TOKEN:-}
+      JUDGE_SSH_HOST: ${JUDGE_SSH_HOST:-}
+      JUDGE_SSH_USER: ${JUDGE_SSH_USER:-}
+      JUDGE_REMOTE_WORK_ROOT: ${JUDGE_REMOTE_WORK_ROOT:-}
       JUDGE_REPO_URL: ${JUDGE_REPO_URL:-https://github.com/cerulean-works/study-group-online-judge.git}
       JUDGE_SLURM_ACCOUNT: ${JUDGE_SLURM_ACCOUNT:-ACD115198}
       JUDGE_SLURM_GPU_RESOURCE: ${JUDGE_SLURM_GPU_RESOURCE:-gpu}
-      WANDB_API_KEY: ${WANDB_API_KEY:?WANDB_API_KEY must be set}
+      WANDB_API_KEY: ${WANDB_API_KEY:-}
       WANDB_ENTITY: ${WANDB_ENTITY:-cerulean-labs}
       WANDB_PROJECT: ${WANDB_PROJECT:-study-group-labs}
+      JUDGE_FLOCK_API_URL: ${JUDGE_FLOCK_API_URL:?Set the Flock API origin}
+      JUDGE_FLOCK_API_KEY: ${JUDGE_FLOCK_API_KEY:?Set a Flock member API key}
+      JUDGE_FLOCK_WEB_URL: ${JUDGE_FLOCK_WEB_URL:-}
+      JUDGE_FLOCK_ENTITY: ${JUDGE_FLOCK_ENTITY:-cerulean-labs}
+      JUDGE_FLOCK_LABS_PROJECT: ${JUDGE_FLOCK_LABS_PROJECT:-study-group-labs}
+      JUDGE_FLOCK_MIDTERM_PROJECT: ${JUDGE_FLOCK_MIDTERM_PROJECT:-midterm-nanogpt}
       JUDGE_SLACK_WEBHOOK_URL: ${JUDGE_SLACK_WEBHOOK_URL:-}
       JUDGE_SLACK_BOT_TOKEN: ${JUDGE_SLACK_BOT_TOKEN:-}
       JUDGE_SLACK_CHANNEL_ID: ${JUDGE_SLACK_CHANNEL_ID:-}
@@ -48,31 +64,35 @@ services:
 
   worker:
     <<: *judge
+    profiles: [submissions]
+    restart: on-failure
     command: ["python", "-m", "judge.worker"]
     environment:
+      JUDGE_ALLOW_CODE_SUBMISSIONS: ${JUDGE_ALLOW_CODE_SUBMISSIONS:-false}
       JUDGE_RUNNER_IMAGE: study-group-online-judge:local
-      JUDGE_WORK_ROOT: ${JUDGE_WORK_ROOT:?JUDGE_WORK_ROOT must be set}
+      JUDGE_WORK_ROOT: ${JUDGE_WORK_ROOT:-/var/lib/study-group-online-judge/work}
       JUDGE_HF_CACHE_VOLUME: study-group-online-judge-hf-cache
       JUDGE_UV_CACHE_VOLUME: study-group-online-judge-uv-cache
-      WANDB_API_KEY: ${WANDB_API_KEY:?WANDB_API_KEY must be set}
+      WANDB_API_KEY: ${WANDB_API_KEY:-}
       WANDB_DIR: /data/wandb
       WANDB_ENTITY: ${WANDB_ENTITY:-cerulean-labs}
       WANDB_MODE: ${WANDB_MODE:-online}
       WANDB_PROJECT: ${WANDB_PROJECT:-study-group-labs}
     group_add:
-      - ${DOCKER_GID:?DOCKER_GID must be set}
+      - ${DOCKER_GID:-999}
     volumes:
       - judge-data:/data
       - hf-cache:/home/judge/.cache/huggingface
       - uv-cache:/home/judge/.cache/uv
       - type: bind
-        source: ${JUDGE_WORK_ROOT:?JUDGE_WORK_ROOT must be set}
-        target: ${JUDGE_WORK_ROOT:?JUDGE_WORK_ROOT must be set}
+        source: ${JUDGE_WORK_ROOT:-/var/lib/study-group-online-judge/work}
+        target: ${JUDGE_WORK_ROOT:-/var/lib/study-group-online-judge/work}
       - type: bind
         source: /var/run/docker.sock
         target: /var/run/docker.sock
 
   tailscale:
+    profiles: [submissions]
     image: tailscale/tailscale:latest
     restart: unless-stopped
     # Give the root daemon an operator matching the worker's UID. Alpine's
@@ -86,7 +106,7 @@ services:
         fi
         exec /usr/local/bin/containerboot
     environment:
-      TS_AUTHKEY: ${TS_AUTHKEY:?Set a Tailscale auth key}
+      TS_AUTHKEY: ${TS_AUTHKEY:-}
       TS_AUTH_ONCE: "true"
       TS_HOSTNAME: ${TS_HOSTNAME:-study-group-online-judge}
       TS_STATE_DIR: /var/lib/tailscale
@@ -108,11 +128,14 @@ services:
 
   ssh-worker:
     <<: *judge
+    profiles: [submissions]
+    restart: on-failure
     command: ["python", "-m", "judge.ssh_worker"]
     depends_on:
       tailscale:
         condition: service_healthy
     environment:
+      JUDGE_ALLOW_CODE_SUBMISSIONS: ${JUDGE_ALLOW_CODE_SUBMISSIONS:-false}
       TS_SOCKET: /var/run/tailscale/tailscaled.sock
     volumes:
       - judge-data:/data

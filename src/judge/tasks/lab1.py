@@ -1,10 +1,11 @@
 import sys
 import traceback
 from pathlib import Path
+from typing import cast
 
 import torch
 from tqdm import tqdm
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoModelForCausalLM, AutoTokenizer, PreTrainedTokenizerBase
 
 from judge.models import GradingType, JudgeResult, Resources, TestResult
 from judge.tasks.base import Task, load_student_function
@@ -43,7 +44,7 @@ def _reference_completion(
     prompts: list[str], max_seq_length: int
 ) -> tuple[list[str], torch.Tensor]:
     print(f"[lab1] loading reference tokenizer: {MODEL_ID}", flush=True)
-    tokenizer = AutoTokenizer.from_pretrained(MODEL_ID)
+    tokenizer = cast(PreTrainedTokenizerBase, AutoTokenizer.from_pretrained(MODEL_ID))
     print(f"[lab1] loading reference model: {MODEL_ID} (fp16, CPU)", flush=True)
     model = AutoModelForCausalLM.from_pretrained(MODEL_ID, dtype=torch.float16)
     model.eval()
@@ -104,7 +105,9 @@ def _reference_completion(
             )
             progress.update()
 
-    completions = [tokenizer.decode(ids, skip_special_tokens=True) for ids in generated]
+    completions = [
+        cast(str, tokenizer.decode(ids, skip_special_tokens=True)) for ids in generated
+    ]
     logits = (
         torch.stack(steps, dim=1)
         if steps
@@ -126,12 +129,14 @@ class Lab1(Task):
             f"[lab1] loading tokenizer and preparing {len(TINY_SHAKESPEARE_SAMPLES)} samples",
             flush=True,
         )
-        tokenizer = AutoTokenizer.from_pretrained(MODEL_ID)
+        tokenizer = cast(
+            PreTrainedTokenizerBase, AutoTokenizer.from_pretrained(MODEL_ID)
+        )
         token_ids = [tokenizer.encode(sample) for sample in TINY_SHAKESPEARE_SAMPLES]
         if any(len(ids) < 8 for ids in token_ids):
             raise RuntimeError("A Tiny Shakespeare sample is too short")
         prompts = [
-            tokenizer.decode(ids[: 6 + index % 3])
+            cast(str, tokenizer.decode(ids[: 6 + index % 3]))
             for index, ids in enumerate(token_ids)
         ]
 

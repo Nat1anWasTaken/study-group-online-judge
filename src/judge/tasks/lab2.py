@@ -8,12 +8,12 @@ import sys
 import traceback
 from collections import defaultdict
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import torch
 from datasets import load_dataset
 from tqdm import tqdm
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoModelForCausalLM, AutoTokenizer, PreTrainedTokenizerBase
 
 from judge.models import JudgeResult, Resources, TestResult
 from judge.tasks.base import Task, load_student_function
@@ -91,7 +91,7 @@ def _reference_predictions(
     if not torch.cuda.is_available():
         raise RuntimeError("Lab 2 requires an available CUDA GPU")
     print(f"[lab2] loading GPT-2 reference tokenizer: {MODEL_ID}", flush=True)
-    tokenizer = AutoTokenizer.from_pretrained(MODEL_ID)
+    tokenizer = cast(PreTrainedTokenizerBase, AutoTokenizer.from_pretrained(MODEL_ID))
     tokenizer.pad_token = tokenizer.eos_token
     tokenizer.padding_side = "left"
     tokenizer.truncation_side = "left"

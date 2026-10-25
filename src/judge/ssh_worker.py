@@ -8,6 +8,7 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from fcntl import LOCK_EX, LOCK_NB, flock
 from pathlib import Path
 
+from judge.config import allow_code_submissions
 from judge.database import (
     begin_remote_job,
     get_job,
@@ -71,6 +72,8 @@ def poll_job(
 
 def poll_jobs(database_path: Path, transport: TailscaleSSH) -> None:
     """Process one cycle synchronously, for development and tests."""
+    if not allow_code_submissions():
+        return
     for request in pending_ssh_jobs(database_path):
         poll_job(database_path, transport, request)
 
@@ -80,6 +83,9 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--once", action="store_true")
     arguments = parser.parse_args()
+    if not allow_code_submissions():
+        log_event("worker.disabled", reason="Code submissions are disabled")
+        return
     database_path = Path(os.environ.get("JUDGE_DATABASE_PATH", "data/judge.db"))
     migrate_database(database_path)
     transport = TailscaleSSH(

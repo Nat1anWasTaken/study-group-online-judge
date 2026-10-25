@@ -14,7 +14,9 @@ from urllib.parse import urlencode, urlsplit
 from urllib.request import Request, urlopen
 from zoneinfo import ZoneInfo
 
+from judge.flock_source import MIDTERM_ID, flock_submissions
 from judge.leaderboard_images import render_standings
+from judge.models import GradingType, MetricDirection, TaskMetadata
 from judge.tasks import TASKS
 
 # Inherit Uvicorn's configured handlers and level so INFO reaches container logs.
@@ -25,6 +27,7 @@ def safe_traceback(error: Exception) -> str:
     detail = "".join(traceback.format_exception(error))
     for name in (
         "WANDB_API_KEY",
+        "JUDGE_FLOCK_API_KEY",
         "JUDGE_API_TOKEN",
         "JUDGE_AGENT_TOKEN",
         "JUDGE_SLACK_WEBHOOK_URL",
@@ -42,6 +45,8 @@ class SubmissionEntry(TypedDict):
     submitted_at: str
     run_url: str | None
     submission_id: str
+    participant_id: NotRequired[str]
+    val_loss: NotRequired[float]
 
 
 class RankedEntry(SubmissionEntry):
@@ -57,6 +62,7 @@ class Leaderboard(TypedDict):
     entries: list[RankedEntry]
     submissions: int
     participants: int
+    project_url: NotRequired[str | None]
 
 
 class LeaderboardSnapshot(TypedDict):
@@ -76,16 +82,24 @@ def timestamp(value: object) -> datetime:
 
 def rank_submissions(submissions) -> list[Leaderboard]:
     boards: list[Leaderboard] = []
-    for task in TASKS.values():
-        metadata = task.metadata()
+    # The midterm is a read-only board, never an executable OJ task.
+    metadata_list = [task.metadata() for task in TASKS.values()] + [
+        TaskMetadata(
+            id=MIDTERM_ID,
+            grading_type=GradingType.SCORE,
+            primary_metric="total_train_steps",
+            metric_direction=MetricDirection.MINIMIZE,
+        )
+    ]
+    for metadata in metadata_list:
         scored = metadata.grading_type == "score"
         best: dict[str, tuple[tuple[float, datetime, str], SubmissionEntry]] = {}
         attempts: dict[str, int] = {}
         for item in submissions:
-            if item["task_id"] != task.id:
+            if item["task_id"] != metadata.id:
                 continue
             actor = item["github_actor"]
-            key = actor.casefold()
+            key = item.get("participant_id", actor.casefold())
             attempts[key] = attempts.get(key, 0) + 1
             if item.get("passed") is False or (
                 not scored and item.get("passed") is not True
@@ -94,7 +108,7 @@ def rank_submissions(submissions) -> list[Leaderboard]:
             value: float | None = None
             priority: float = 0
             if scored:
-                metric = item["metrics"].get(task.primary_metric)
+                metric = item["metrics"].get(metadata.primary_metric)
                 if (
                     isinstance(metric, bool)
                     or not isinstance(metric, (int, float))
@@ -113,6 +127,12 @@ def rank_submissions(submissions) -> list[Leaderboard]:
                         "submitted_at": timestamp(item["submitted_at"]).isoformat(),
                         "run_url": item.get("run_url"),
                         "submission_id": item["id"],
+                        "participant_id": key,
+                        **(
+                            {"val_loss": item["metrics"]["val_loss"]}
+                            if metadata.id == MIDTERM_ID
+                            else {}
+                        ),
                     },
                 )
         entries: list[RankedEntry] = []
@@ -123,11 +143,19 @@ def rank_submissions(submissions) -> list[Leaderboard]:
                 {
                     **entry,
                     "rank": rank,
-                    "attempts": attempts[entry["github_actor"].casefold()],
+                    "attempts": attempts[entry["participant_id"]],
                 }
             )
         boards.append(
             {
+                "project_url": next(
+                    (
+                        item["project_url"]
+                        for item in submissions
+                        if item["task_id"] == metadata.id and item.get("project_url")
+                    ),
+                    None,
+                ),
                 "id": metadata.id,
                 "grading_type": metadata.grading_type.value,
                 "primary_metric": metadata.primary_metric,
@@ -142,56 +170,6 @@ def rank_submissions(submissions) -> list[Leaderboard]:
             }
         )
     return boards
-
-
-def wandb_submissions():
-    import wandb
-
-    entity = os.getenv("WANDB_ENTITY") or "cerulean-labs"
-    project = os.getenv("WANDB_PROJECT") or "study-group-labs"
-    api = wandb.Api(timeout=20)
-    runs = api.runs(
-        f"{entity}/{project}", filters={"summary_metrics.judge_status": "completed"}
-    )
-    result = []
-    scanned = skipped_metadata = skipped_timestamp = 0
-    for run in runs:
-        scanned += 1
-        config, summary = run.config, dict(run.summary)
-        if (
-            config.get("task_id") not in TASKS
-            or not isinstance(config.get("github_actor"), str)
-            or not config["github_actor"].strip()
-        ):
-            skipped_metadata += 1
-            continue
-        submitted = config.get("submitted_at") or run.created_at
-        try:
-            timestamp(submitted)
-        except ValueError, TypeError:
-            skipped_timestamp += 1
-            continue
-        result.append(
-            {
-                "id": run.id,
-                "task_id": config["task_id"],
-                "github_actor": config["github_actor"],
-                "submitted_at": submitted,
-                "passed": summary.get("passed"),
-                "metrics": summary,
-                "run_url": run.url,
-            }
-        )
-    logger.info(
-        "W&B runs fetched project=%s/%s scanned=%d accepted=%d skipped_metadata=%d skipped_timestamp=%d",
-        entity,
-        project,
-        scanned,
-        len(result),
-        skipped_metadata,
-        skipped_timestamp,
-    )
-    return result
 
 
 def new_record(board, previous):
@@ -334,7 +312,11 @@ def post_slack(
     for board in boards:
         if board["id"] not in changed or (not daily and not board["entries"]):
             continue
-        label = board["id"].replace("lab", "Lab ", 1)
+        label = (
+            "Midterm"
+            if board["id"] == MIDTERM_ID
+            else board["id"].replace("lab", "Lab ", 1)
+        )
         name = names.get(board["id"])
         title = f"{label} ({name})" if name else label
         heading = (
@@ -410,7 +392,7 @@ def post_slack(
 class LeaderboardService:
     def __init__(self, database_path: Path):
         self.database_path = database_path
-        self.source = "wandb"
+        self.source = "flock"
         self.state_path = database_path.with_suffix(".leaderboard.json")
         self.snapshot: LeaderboardSnapshot = {
             "source": self.source,
@@ -440,16 +422,16 @@ class LeaderboardService:
     def refresh(self):
         # A single API worker owns polling. HTTP reads only access the cached snapshot.
         started = monotonic()
-        project = f"{os.getenv('WANDB_ENTITY') or 'cerulean-labs'}/{os.getenv('WANDB_PROJECT') or 'study-group-labs'}"
+        project = f"{os.getenv('JUDGE_FLOCK_ENTITY') or 'cerulean-labs'}/{os.getenv('JUDGE_FLOCK_LABS_PROJECT') or 'study-group-labs'}, {os.getenv('JUDGE_FLOCK_MIDTERM_PROJECT') or 'midterm-nanogpt'}"
         stage = "fetch"
-        logger.info("W&B refresh started project=%s", project)
+        logger.info("Flock refresh started project=%s", project)
         try:
-            submissions = wandb_submissions()
+            submissions = flock_submissions(set(TASKS))
             stage = "rank"
             boards = rank_submissions(submissions)
         except Exception as error:  # noqa: BLE001 - retain last good standings
             logger.error(
-                "W&B refresh failed project=%s stage=%s elapsed=%.2fs last_success=%s\n%s",
+                "Flock refresh failed project=%s stage=%s elapsed=%.2fs last_success=%s\n%s",
                 project,
                 stage,
                 monotonic() - started,
@@ -462,7 +444,7 @@ class LeaderboardService:
             }
             return
         logger.info(
-            "W&B refresh succeeded project=%s elapsed=%.2fs submissions=%d ranked=%s",
+            "Flock refresh succeeded project=%s elapsed=%.2fs submissions=%d ranked=%s",
             project,
             monotonic() - started,
             len(submissions),

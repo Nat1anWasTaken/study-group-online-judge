@@ -17,7 +17,7 @@ def render_standings(board, entries, directory: Path) -> str:
     if not (dist / "index.html").is_file():
         raise RuntimeError("Build the leaderboard UI with npm run build --prefix ui")
     snapshot = {
-        "source": "wandb",
+        "source": "flock",
         "updated_at": None,
         "error": None,
         "labs": [{**board, "entries": entries}],

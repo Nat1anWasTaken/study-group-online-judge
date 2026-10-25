@@ -1,4 +1,5 @@
 import json
+import os
 import shlex
 import subprocess
 import tempfile
@@ -30,6 +31,9 @@ from judge.ssh_worker import poll_jobs
 
 class SSHWorkerTests(unittest.TestCase):
     def setUp(self):
+        environment = patch.dict(os.environ, {"JUDGE_ALLOW_CODE_SUBMISSIONS": "true"})
+        environment.start()
+        self.addCleanup(environment.stop)
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         self.path = Path(temporary.name) / "judge.db"

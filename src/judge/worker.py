@@ -6,6 +6,7 @@ from pathlib import Path
 
 import wandb
 
+from judge.config import allow_code_submissions
 from judge.database import (
     claim_next_job,
     complete_job,
@@ -164,6 +165,9 @@ def run_worker(
 ) -> Job | None:
     """Poll SQLite and process jobs one at a time."""
 
+    if not allow_code_submissions():
+        return None
+
     migrate_database(database_path)
     executor = DockerExecutor(
         runner_image,
@@ -196,6 +200,10 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--once", action="store_true")
     arguments = parser.parse_args()
+
+    if not allow_code_submissions():
+        print("Code submissions are disabled; CPU worker will not start.")
+        return
 
     runner_image = os.environ.get("JUDGE_RUNNER_IMAGE")
     if not runner_image:
